@@ -1,0 +1,21 @@
+{
+  "name": "proxispeak-project-2",
+  "version": "1.0.0",
+  "description": "Project 2: ProxiSpeak - Geospatial Proximity Audio Ecosystem (Sign Up & Login Pages)",
+  "scripts": {
+    "server": "npm --prefix server start",
+    "client": "npm --prefix client dev",
+    "install:all": "npm --prefix server install && npm --prefix client install"
+  },
+  "keywords": [
+    "proxispeak",
+    "infotact",
+    "geospatial",
+    "proximity-audio",
+    "react",
+    "node",
+    "mongodb"
+  ],
+  "author": "Infotact Solutions",
+  "license": "ISC"
+}
