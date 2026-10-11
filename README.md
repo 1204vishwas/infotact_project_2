@@ -65,7 +65,7 @@ This repository implements the **Authentication & Spatial Identity Onboarding Mo
 This module turns the authenticated profile into a living 2D virtual office:
 
 ### 6. **React Canvas World (`WorldCanvas.jsx`)**
-- **Full 2D overhead office** rendered imperatively on an HTML5 `<canvas>` at 60fps — floor grid, role-coded zones (Developer Bay, Spatial Audio Lab, Product Pods, Collaboration Hall, Lounge), desks, and perimeter walls.
+- **Full 2D overhead office** rendered imperatively on an HTML5 `<canvas>` at 60fps — dark navy floor grid and the four original zones: Spatial Audio Lab, Core WebRTC Bay, Product & Design Hub, and Breakout Lounge & Water Cooler — each with a dashed accent border, icon heading, and furniture (desks, server rack, whiteboard, lounge seating), plus perimeter walls.
 - **Smooth keyboard movement:** `WASD` / arrow keys with frame-rate-independent acceleration, clamped max velocity, and friction — diagonal movement is normalized so it never feels faster.
 - **Mouse / pointer click-to-walk:** clicking anywhere on the floor steers the avatar with velocity easing toward the target; drag also re-targets.
 - **Earshot proximity system:** a pulsing `150px` earshot ring with live Web Audio-style gain attenuation, connection lines and radiating sound waves to peers inside earshot.
