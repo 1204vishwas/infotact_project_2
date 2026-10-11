@@ -702,20 +702,20 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   return (
     <div className="w-full max-w-6xl mx-auto flex flex-col gap-4">
       {/* Top HUD Bar */}
-      <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-4 shadow-xl backdrop-blur-xl flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-slate-900/90 rounded-2xl border border-slate-800 p-3 sm:p-4 shadow-xl backdrop-blur-xl flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
         {/* Left: Office & Zone Info */}
-        <div className="flex items-center space-x-3">
-          <div className="p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
-            <Radio className="w-5 h-5 animate-pulse" />
+        <div className="flex items-center space-x-3 w-full md:w-auto min-w-0">
+          <div className="p-2 sm:p-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 shrink-0">
+            <Radio className="w-4 h-4 sm:w-5 sm:h-5 animate-pulse" />
           </div>
-          <div>
-            <div className="flex items-center space-x-2">
-              <h2 className="text-base font-extrabold text-white">ProxiSpeak Virtual Office</h2>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+              <h2 className="text-sm sm:text-base font-extrabold text-white truncate">ProxiSpeak Virtual Office</h2>
+              <span className="text-[9px] sm:text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 whitespace-nowrap">
                 Week 1: Canvas & WebSockets
               </span>
             </div>
-            <div className="flex items-center space-x-2 text-xs text-slate-400 mt-0.5">
+            <div className="flex flex-wrap items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 mt-0.5">
               <span className="text-emerald-400 font-medium">{currentZone}</span>
               <span>•</span>
               <span className="font-mono text-slate-400">
@@ -725,56 +725,59 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           </div>
         </div>
 
-        {/* Center: Live Connection & Online Count */}
-        <div className="flex items-center space-x-3">
-          <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs">
-            <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-400 shadow-sm shadow-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
-            <span className="text-slate-300">
-              {connectionStatus === 'connected' ? 'Signaling Server Online' : 'Connecting...'}
-            </span>
+        {/* Center & Right Actions Container */}
+        <div className="flex flex-wrap items-center justify-between md:justify-end gap-2.5 w-full md:w-auto pt-2 md:pt-0 border-t md:border-t-0 border-slate-800/60">
+          {/* Live Connection & Online Count */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] sm:text-xs">
+              <span className={`w-2 h-2 rounded-full ${connectionStatus === 'connected' ? 'bg-emerald-400 shadow-sm shadow-emerald-400 animate-pulse' : 'bg-rose-400'}`} />
+              <span className="text-slate-300">
+                {connectionStatus === 'connected' ? 'Online' : 'Connecting...'}
+              </span>
+            </div>
+
+            <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-xl bg-slate-950/80 border border-slate-800 text-[11px] sm:text-xs">
+              <Users className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+              <span className="text-slate-300 font-mono font-medium">
+                {onlineCount} {onlineCount === 1 ? 'Avatar' : 'Avatars'}
+              </span>
+            </div>
           </div>
 
-          <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-950/80 border border-slate-800 text-xs">
-            <Users className="w-3.5 h-3.5 text-indigo-400" />
-            <span className="text-slate-300 font-mono font-medium">
-              {onlineCount} {onlineCount === 1 ? 'Avatar' : 'Avatars'} in Space
-            </span>
+          {/* Quick Actions */}
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={handleSpawnTestPeer}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 border border-indigo-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-indigo-600/20 cursor-pointer transition-all"
+              title="Spawn a test avatar to walk near and test proximity"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
+              <span>Spawn Bot</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handleResetPosition}
+              className="p-1.5 sm:p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 cursor-pointer transition-colors"
+              title="Center Avatar"
+            >
+              <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </button>
+
+            <button
+              type="button"
+              onClick={onBackToDashboard}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 text-[11px] sm:text-xs font-medium cursor-pointer transition-colors"
+            >
+              Profile
+            </button>
           </div>
-        </div>
-
-        {/* Right: Quick Actions */}
-        <div className="flex items-center space-x-2">
-          <button
-            type="button"
-            onClick={handleSpawnTestPeer}
-            className="px-3 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 border border-indigo-500/40 text-white text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-indigo-600/20 cursor-pointer transition-all"
-            title="Spawn a test avatar to walk near and test proximity"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
-            <span>Spawn Peer Bot</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={handleResetPosition}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 cursor-pointer transition-colors"
-            title="Center Avatar"
-          >
-            <RotateCcw className="w-4 h-4" />
-          </button>
-
-          <button
-            type="button"
-            onClick={onBackToDashboard}
-            className="px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 text-xs font-medium cursor-pointer transition-colors"
-          >
-            Session Profile
-          </button>
         </div>
       </div>
 
       {/* Main 2D Canvas Container */}
-      <div className="relative rounded-3xl overflow-hidden border border-slate-800/90 shadow-2xl bg-slate-950 group">
+      <div className="relative rounded-2xl sm:rounded-3xl overflow-hidden border border-slate-800/90 shadow-2xl bg-slate-950 group">
         <canvas
           ref={canvasRef}
           width={WORLD_WIDTH}
@@ -784,59 +787,59 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         />
 
         {/* Floating Proximity Radar Status Pill (Top Left Inside Canvas) */}
-        <div className="absolute top-4 left-4 flex flex-col gap-2 pointer-events-none">
-          <div className="bg-slate-900/90 backdrop-blur-md px-3.5 py-2 rounded-xl border border-slate-800 text-xs shadow-xl flex items-center space-x-2.5">
-            <Compass className="w-4 h-4 text-cyan-400 animate-spin" />
-            <div>
-              <span className="text-slate-200 font-bold block text-[11px] leading-tight">
+        <div className="absolute top-2.5 left-2.5 sm:top-4 sm:left-4 flex flex-col gap-1.5 sm:gap-2 pointer-events-none max-w-[calc(100%-1.5rem)] sm:max-w-xs">
+          <div className="bg-slate-900/90 backdrop-blur-md px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl border border-slate-800 text-xs shadow-xl flex items-center space-x-2">
+            <Compass className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-cyan-400 animate-spin shrink-0" />
+            <div className="min-w-0">
+              <span className="text-slate-200 font-bold block text-[10px] sm:text-[11px] leading-tight">
                 2D HTML5 Canvas World
               </span>
-              <span className="text-[10px] text-slate-400 font-mono">
-                Real-time X/Y Coordinate Broadcasting
+              <span className="text-[9px] sm:text-[10px] text-slate-400 font-mono truncate block">
+                Socket.io Coordinates
               </span>
             </div>
           </div>
 
           {/* Active Earshot Card if peers are nearby */}
           {peersInEarshot.length > 0 ? (
-            <div className="bg-emerald-950/90 backdrop-blur-md px-3.5 py-2.5 rounded-xl border border-emerald-500/40 text-xs shadow-xl animate-fadeIn">
-              <div className="flex items-center space-x-2 text-emerald-400 font-bold mb-1">
-                <Volume2 className="w-4 h-4 animate-bounce" />
+            <div className="bg-emerald-950/90 backdrop-blur-md px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl border border-emerald-500/40 text-xs shadow-xl animate-fadeIn">
+              <div className="flex items-center space-x-1.5 sm:space-x-2 text-emerald-400 font-bold mb-1 text-[11px] sm:text-xs">
+                <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-bounce shrink-0" />
                 <span>Within Audio Earshot ({peersInEarshot.length})</span>
               </div>
               {peersInEarshot.map((peer, idx) => (
-                <div key={idx} className="text-[11px] text-emerald-200/90 font-mono flex items-center justify-between gap-3">
-                  <span>{peer.name}:</span>
-                  <span className="text-emerald-400 font-bold">{peer.gain}% Gain ({peer.distance}px)</span>
+                <div key={idx} className="text-[10px] sm:text-[11px] text-emerald-200/90 font-mono flex items-center justify-between gap-2">
+                  <span className="truncate">{peer.name}:</span>
+                  <span className="text-emerald-400 font-bold shrink-0">{peer.gain}% ({peer.distance}px)</span>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="bg-slate-900/80 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800 text-[11px] text-slate-400 font-mono">
-              🎧 No colleagues within earshot radius ({earshotRadius}px)
+            <div className="bg-slate-900/80 backdrop-blur-md px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border border-slate-800 text-[10px] sm:text-[11px] text-slate-400 font-mono">
+              🎧 No colleagues in earshot ({earshotRadius}px)
             </div>
           )}
         </div>
 
         {/* Floating Controls Overlay (Bottom Right Inside Canvas) */}
-        <div className="absolute bottom-4 right-4 flex items-center space-x-2.5 bg-slate-900/90 backdrop-blur-md px-4 py-2.5 rounded-2xl border border-slate-800 shadow-xl">
+        <div className="absolute bottom-2.5 right-2.5 sm:bottom-4 sm:right-4 flex flex-wrap items-center gap-2 bg-slate-900/90 backdrop-blur-md px-2.5 sm:px-4 py-1.5 sm:py-2.5 rounded-xl sm:rounded-2xl border border-slate-800 shadow-xl max-w-[calc(100%-1.5rem)]">
           {/* Mic Toggle Button */}
           <button
             type="button"
             onClick={handleToggleMic}
-            className={`p-2 rounded-xl border cursor-pointer transition-all flex items-center space-x-1.5 ${
+            className={`p-1.5 sm:p-2 rounded-xl border cursor-pointer transition-all flex items-center space-x-1.5 ${
               micMuted
                 ? 'bg-rose-950/60 border-rose-500/50 text-rose-300 hover:bg-rose-900/60'
                 : 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
             }`}
           >
-            {micMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
-            <span className="text-xs font-semibold">{micMuted ? 'Muted' : 'Speaking'}</span>
+            {micMuted ? <MicOff className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Mic className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+            <span className="text-[11px] sm:text-xs font-semibold">{micMuted ? 'Muted' : 'Speaking'}</span>
           </button>
 
           {/* Earshot Radius Slider */}
-          <div className="flex items-center space-x-2 border-l border-slate-800 pl-3">
-            <span className="text-[11px] text-slate-400 whitespace-nowrap">Earshot:</span>
+          <div className="flex items-center space-x-1.5 sm:space-x-2 border-l border-slate-800 pl-2 sm:pl-3">
+            <span className="text-[10px] sm:text-[11px] text-slate-400 whitespace-nowrap">Earshot:</span>
             <input
               type="range"
               min="80"
@@ -844,9 +847,9 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
               step="10"
               value={earshotRadius}
               onChange={(e) => setEarshotRadius(parseInt(e.target.value))}
-              className="w-20 accent-indigo-500 cursor-pointer"
+              className="w-16 sm:w-20 accent-indigo-500 cursor-pointer"
             />
-            <span className="text-[10px] text-indigo-300 font-mono">{earshotRadius}px</span>
+            <span className="text-[9px] sm:text-[10px] text-indigo-300 font-mono">{earshotRadius}px</span>
           </div>
         </div>
       </div>

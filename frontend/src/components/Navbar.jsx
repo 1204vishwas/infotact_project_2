@@ -62,25 +62,29 @@ export default function Navbar({ currentView, setCurrentView, backendStatus, cur
                 <button
                   type="button"
                   onClick={() => setCurrentView('world')}
-                  className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center space-x-1.5 cursor-pointer ${
+                  className={`px-2.5 sm:px-3 py-1.5 text-xs font-semibold rounded-md transition-all flex items-center space-x-1.5 cursor-pointer ${
                     currentView === 'world'
                       ? 'bg-gradient-to-r from-cyan-600 to-indigo-600 text-white shadow-sm shadow-indigo-500/50'
                       : 'text-slate-400 hover:text-slate-200'
                   }`}
+                  title="2D Virtual Office Canvas"
                 >
-                  <Compass className="w-3.5 h-3.5" />
-                  <span>2D Canvas World</span>
+                  <Compass className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    <span className="hidden sm:inline">2D Canvas </span>World
+                  </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setCurrentView('dashboard')}
-                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all flex items-center space-x-1.5 cursor-pointer ${
+                  className={`px-2.5 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-all flex items-center space-x-1.5 cursor-pointer ${
                     currentView === 'dashboard'
                       ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/50'
                       : 'text-slate-400 hover:text-slate-200'
                   }`}
+                  title="User Profile & Settings"
                 >
-                  <LayoutDashboard className="w-3.5 h-3.5" />
+                  <LayoutDashboard className="w-3.5 h-3.5 shrink-0" />
                   <span>Profile</span>
                 </button>
               </div>
@@ -99,7 +103,7 @@ export default function Navbar({ currentView, setCurrentView, backendStatus, cur
               <button
                 type="button"
                 onClick={() => setCurrentView('login')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
+                className={`px-2.5 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
                   currentView === 'login'
                     ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/50'
                     : 'text-slate-400 hover:text-slate-200'
@@ -110,7 +114,7 @@ export default function Navbar({ currentView, setCurrentView, backendStatus, cur
               <button
                 type="button"
                 onClick={() => setCurrentView('signup')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
+                className={`px-2.5 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer ${
                   currentView === 'signup'
                     ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/50'
                     : 'text-slate-400 hover:text-slate-200'
@@ -121,14 +125,16 @@ export default function Navbar({ currentView, setCurrentView, backendStatus, cur
               <button
                 type="button"
                 onClick={() => setCurrentView('world')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer flex items-center space-x-1 ${
+                className={`px-2.5 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-all cursor-pointer flex items-center space-x-1 ${
                   currentView === 'world'
                     ? 'bg-cyan-600 text-white shadow-sm shadow-cyan-500/50'
                     : 'text-cyan-400 hover:text-cyan-200'
                 }`}
               >
-                <Compass className="w-3 h-3" />
-                <span>Guest World</span>
+                <Compass className="w-3 h-3 shrink-0" />
+                <span>
+                  <span className="hidden sm:inline">Guest </span>World
+                </span>
               </button>
             </div>
           )}
