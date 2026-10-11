@@ -112,7 +112,7 @@ export default function App() {
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col justify-center px-4 sm:px-6 lg:px-8 py-8 sm:py-12 max-w-7xl mx-auto w-full">
         {currentView === 'dashboard' ? (
-          <SessionDashboard user={currentUser} onLogout={handleLogout} />
+          <SessionDashboard user={currentUser} onLogout={handleLogout} showToast={showToast} />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
             {/* Left Column: Auth Form (Sign Up or Login) */}

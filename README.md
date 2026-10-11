@@ -60,6 +60,25 @@ This repository implements the **Authentication & Spatial Identity Onboarding Mo
 
 ---
 
+## 🌍 World Rendering & Coordinate Broadcasting (Canvas Layer)
+
+This module turns the authenticated profile into a living 2D virtual office:
+
+### 6. **React Canvas World (`WorldCanvas.jsx`)**
+- **Full 2D overhead office** rendered imperatively on an HTML5 `<canvas>` at 60fps — floor grid, role-coded zones (Developer Bay, Spatial Audio Lab, Product Pods, Collaboration Hall, Lounge), desks, and perimeter walls.
+- **Smooth keyboard movement:** `WASD` / arrow keys with frame-rate-independent acceleration, clamped max velocity, and friction — diagonal movement is normalized so it never feels faster.
+- **Mouse / pointer click-to-walk:** clicking anywhere on the floor steers the avatar with velocity easing toward the target; drag also re-targets.
+- **Earshot proximity system:** a pulsing `150px` earshot ring with live Web Audio-style gain attenuation, connection lines and radiating sound waves to peers inside earshot.
+
+### 7. **Real-Time Coordinate Broadcasting (`useWorldSocket.js` + Socket.io)**
+- **Socket.io world layer** (`server/realtime/worldSocket.js`) authenticates sockets with the login JWT and maintains a live in-memory roster of avatars.
+- **`world:join` / `world:state`** — newcomers receive the office bounds and the full avatar snapshot; others are notified via `world:player-joined`.
+- **`world:move`** — high-frequency (<100ms throttled) coordinate broadcasting; every move is relayed to all peers in the world.
+- **Geospatial persistence** — coordinates are throttled-upserted back into the MongoDB `2d` index, keeping the `$near` / `$geoWithin` engine live.
+- **Graceful degradation** — if the backend is offline, the canvas switches to a local simulation (demo colleagues wander the office) so movement and proximity behaviour remain fully testable.
+
+---
+
 ## 🛠️ Project Structure
 
 ```
@@ -69,27 +88,34 @@ project_2/
 ├── server/                   # Backend Express & MongoDB Auth API
 │   ├── .env                  # Port (5000) & MongoDB URI
 │   ├── package.json          # Backend dependencies
-│   ├── server.js             # Express server entry point
+│   ├── server.js             # Express entry point + Socket.io world layer
 │   ├── middleware/
 │   │   └── auth.js           # JWT authentication middleware
 │   ├── models/
 │   │   └── User.js           # Mongoose model with 2D planar geospatial index
+│   ├── realtime/
+│   │   ├── worldState.js     # Shared in-memory avatar roster & office bounds
+│   │   └── worldSocket.js    # Socket.io coordinate broadcasting handlers
 │   └── routes/
-│       └── auth.js           # Register, Login, Me, Demo accounts
+│       ├── auth.js           # Register, Login, Me, Demo accounts
+│       └── world.js          # GET /api/world/bounds · GET /api/world/online
 └── client/                   # Frontend Vite + React + Tailwind CSS
     ├── index.html            # App HTML & typography
-    ├── package.json          # React, Vite, Lucide-react, Tailwind v4
-    ├── vite.config.js        # Vite config with backend proxy
+    ├── package.json          # React, Vite, Lucide-react, Tailwind v4, socket.io-client
+    ├── vite.config.js        # Vite config with backend & socket.io proxy
     └── src/
         ├── App.jsx           # Master application container & view manager
         ├── index.css         # Tailwind styles & radar pulse keyframes
         ├── main.jsx          # React DOM root entry
+        ├── hooks/
+        │   └── useWorldSocket.js   # Realtime coordinate-broadcasting hook
         └── components/
             ├── Navbar.jsx               # Infotact branding & ISO 9001 badges
             ├── LoginPage.jsx            # Sign-in form with 1-click demo logins
             ├── SignUpPage.jsx           # Avatar registration with live color picker
             ├── ProximityRadarPreview.jsx# 2D Canvas spatial audio proximity engine
-            ├── SessionDashboard.jsx     # Post-login authenticated status card
+            ├── SessionDashboard.jsx     # Post-login office dashboard hosting the world
+            ├── WorldCanvas.jsx          # React Canvas office + keyboard/mouse movement
             └── ForgotPasswordModal.jsx  # Password recovery dialog
 ```
 

@@ -1,9 +1,13 @@
+const http = require('http');
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
+const { Server } = require('socket.io');
 require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
+const worldRoutes = require('./routes/world');
+const initWorldSocket = require('./realtime/worldSocket');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -18,6 +22,7 @@ app.use(express.json());
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/world', worldRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -41,6 +46,17 @@ mongoose.connect(MONGODB_URI)
     console.log('[ProxiSpeak] Running with in-memory fallback enabled for smooth operation.');
   });
 
-app.listen(PORT, () => {
+// Create the HTTP server and attach the realtime coordinate-broadcasting layer
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
+initWorldSocket(io);
+
+httpServer.listen(PORT, () => {
   console.log(`[ProxiSpeak Auth Server] Running on http://localhost:${PORT}`);
+  console.log(`[ProxiSpeak Realtime] Socket.io world broadcasting active on ws://localhost:${PORT}`);
 });
