@@ -8,55 +8,62 @@ Traditional remote collaboration platforms (like Zoom and Microsoft Teams) isola
 
 **ProxiSpeak** solves this by introducing a **2D overhead virtual office** rendered via HTML5 Canvas and React. As users move their avatars closer to colleagues:
 - Audio dynamically crossfades and amplifies using the **Web Audio API** (3D stereo panning & volume attenuation).
-- A **Node.js & MongoDB Geospatial Engine** tracks real-time $X/Y$ coordinates using native `$near` & `$geoWithin` queries.
-- **WebRTC peer-to-peer audio connections** are established dynamically within a 100–150px "earshot" proximity radius.
+- A **Node.js, Express & MongoDB Geospatial Engine** tracks real-time $X/Y$ coordinates using native `$near` & `$geoWithin` queries.
+- **Socket.io WebSocket Signaling Server** coordinates avatar movements and WebRTC peer-to-peer handshakes based on who is within "earshot" (100–150px proximity radius).
 
 ---
 
-## 🚀 Implemented Modules (Sign Up & Login System)
+## 🎯 Week 1 Implementation Details
 
-This repository implements the **Authentication & Spatial Identity Onboarding Module** for ProxiSpeak:
+| Component | Architecture & Technologies | Deliverables Completed |
+|---|---|---|
+| **Backend** | **Node.js, Express, Socket.io, MongoDB** | **Signaling & Movement:** Built Socket.io WebSocket server to broadcast avatar $X/Y$ coordinates in real time. Setup MongoDB geospatial schemas with flat 2D planar index (`location: [X,Y]`, `min: -1000, max: 10000`). Implemented `$near` proximity & `$geoWithin` boundary queries. |
+| **Frontend** | **React, WebRTC, Canvas API** | **World Rendering:** Built high-performance React HTML5 Canvas 2D layer (60 FPS). Implemented smooth keyboard (WASD & Arrows physics velocity) and mouse (click-to-walk waypoint navigation) avatar movement, obstacle collision detection, dynamic earshot radius rendering, and real-time Socket.io coordinate broadcasting. |
 
-### 1. **Sign Up Page (`SignUpPage.jsx`)**
-- **Spatial Identity Setup:** Full Name, Infotact Work Email, Unique Avatar Tag (`@username`).
-- **Virtual Office Role Selection:** Developer (WebRTC & Canvas), Audio Engineer (Spatial 3D Pan), Product Manager, Designer, DevOps.
-- **2D Avatar Appearance Customizer:** Real-time color swatches (Indigo Pulse, Emerald Wave, Amber Tone, Cyan Echo, Rose Acoustic, Purple Synth, Electric Sky).
-- **Live Canvas Reflection:** Changing your avatar color and name instantly updates the live 2D Proximity Radar visualizer on the screen.
-- **Password Security Meter:** Real-time feedback bar measuring length, case sensitivity, numbers, and symbols.
-- **Matching Validator & Policies:** Password confirmation check and Infotact workspace compliance agreement.
+---
 
-### 2. **Login Page (`LoginPage.jsx`)**
-- **Flexible Credential Auth:** Supports either Work Email or Username identifier.
-- **1-Click Quick Demo Accounts:**
-  - 🎧 **Dr. Aris Thorne** (`aris@infotact.in` / `password123`) — Audio Engineer Lead
-  - 💻 **Priya Sharma** (`priya@infotact.in` / `password123`) — Core WebRTC Specialist
-  - 📊 **Rohan Mehta** (`rohan@infotact.in` / `password123`) — Product Manager
-- **Show / Hide Password Toggle** & "Remember spatial station" preference persistence.
-- **Enterprise Infotact SSO Shortcut:** Quick login for corporate users.
-- **Password Recovery Dialog (`ForgotPasswordModal.jsx`):** Modal with simulated security link dispatch.
+## 🚀 Key Modules
 
-### 3. **Interactive 2D Proximity Radar (`ProximityRadarPreview.jsx`)**
-- Built with HTML5 Canvas.
-- Displays an overhead virtual floor with grid lines.
-- Illustrates peer avatar distance calculations and the 110px earshot boundary.
-- Live Web Audio API gain attenuation feedback (e.g. 78% gain at 85px; 0% outside earshot).
-- Real-time animated audio equalizer waves and dynamic coordinates display.
+### 1. **2D Virtual World (`frontend/src/components/VirtualOfficeWorld.jsx`)**
+- **HTML5 Canvas 2D Layer:** High-performance render loop running at steady 60 FPS.
+- **Themed Office Zones:**
+  - 🎧 **Spatial Audio Lab** (top-left) — 3D stereo panning testing area
+  - 💻 **Core WebRTC Bay** (top-right) — engineering cluster desks
+  - 💡 **Product & Design Hub** (bottom-left) — whiteboard and roadmap island
+  - ☕ **Breakout Lounge & Pantry** (bottom-right) — water cooler & coffee bar
+- **Furniture & Collision Boundaries:** Desks, meeting tables, and perimeter boundaries prevent avatars from clipping out of bounds.
+- **Smooth Physics-Based Keyboard Walking:**
+  - `W, A, S, D` and Arrow keys.
+  - Smooth acceleration, damping/friction, and diagonal velocity normalization.
+- **Mouse Click-to-Move:** Click anywhere on the office floor to set a waypoint reticle; avatar smoothly navigates toward the target coordinates.
+- **Acoustic Earshot Proximity (100–150px):**
+  - Dotted circular radius centered on user avatar.
+  - Live peer distance tracking: when remote colleagues come within earshot, green connection beams and acoustic wave ripples connect them.
+  - Dynamic Web Audio API gain calculation (100% at close range, smoothly attenuating to 0% outside boundary).
 
-### 4. **Session Dashboard (`SessionDashboard.jsx`)**
-- Displays user's assigned 2D canvas coordinates `[X, Y]` ready for MongoDB `$near` queries.
-- Visual badge with role, avatar color, and WebRTC audio stream status.
-- One-click "Sign Out" to return to the login interface.
+### 2. **WebSocket Signaling & Movement Server (`backend/sockets/signaling.js`)**
+- **Socket.io Server:** Attached to Node.js HTTP server.
+- **Real-Time Coordinate Broadcasting:**
+  - `join-space`: Synchronizes all active avatars upon entering the room.
+  - `avatar-move`: Broadcasts new `[X, Y]` coordinates to all peers in the room.
+  - `space-state`: Supplies initial state to newly joined clients.
+  - Smooth linear interpolation (`lerp`) on the frontend ensures remote avatars glide smoothly across the screen.
+- **WebRTC Signaling Handshakes:**
+  - `webrtc-offer`, `webrtc-answer`, `webrtc-ice-candidate` relays ready for Week 2 audio mesh.
+- **Presence & DB Persistence:** Updates user location and online status periodically in MongoDB `proxify`.
 
-### 5. **Backend Auth Server (`server/`)**
-- **Node.js & Express:** REST API on `http://localhost:5000`.
-- **MongoDB Geospatial Index:** User coordinates indexed with `2d` planar index (`min: -1000, max: 10000`).
-- **Security:** `bcryptjs` password hashing with salt rounds + `jsonwebtoken` (JWT) token issuance.
-- **Auto-Seeding:** Pre-populates default demo team members on launch.
-- **Endpoints:**
-  - `POST /api/auth/register` — Validates and creates geospatial user profile
-  - `POST /api/auth/login` — Authenticates credentials and returns JWT session
-  - `GET /api/auth/me` — Protected token verification
-  - `GET /api/health` — Backend and MongoDB status probe
+### 3. **MongoDB Geospatial Schemas (`backend/models/`)**
+- **User Schema (`User.js`):**
+  - Indexed via `location: '2d'` (`min: -1000, max: 10000`).
+  - Native helper `User.findNearby(x, y, maxDistance)` executes MongoDB `$near` queries.
+  - Native helper `User.findWithinBox(bottomLeft, topRight)` executes MongoDB `$geoWithin` box queries.
+- **Office Space Schema (`OfficeSpace.js`):**
+  - Room dimensions, zone definitions, and obstacle coordinates stored in MongoDB `proxify`.
+
+### 4. **Authentication & Identity Onboarding**
+- **Sign Up Page (`SignUpPage.jsx`):** Identity configuration, 7-palette avatar color customizer, role selection, and live password strength analyzer.
+- **Login Page (`LoginPage.jsx`):** Work email or username sign-in with 1-click demo accounts (*Dr. Aris Thorne*, *Priya Sharma*, *Rohan Mehta*).
+- **Session Dashboard (`SessionDashboard.jsx`):** Profile overview with direct "Launch Virtual Office" CTA.
 
 ---
 
@@ -65,32 +72,40 @@ This repository implements the **Authentication & Spatial Identity Onboarding Mo
 ```
 project_2/
 ├── package.json              # Workspace root scripts
-├── readme.md                 # Project documentation
-├── server/                   # Backend Express & MongoDB Auth API
-│   ├── .env                  # Port (5000) & MongoDB URI
-│   ├── package.json          # Backend dependencies
-│   ├── server.js             # Express server entry point
-│   ├── middleware/
-│   │   └── auth.js           # JWT authentication middleware
-│   ├── models/
-│   │   └── User.js           # Mongoose model with 2D planar geospatial index
-│   └── routes/
-│       └── auth.js           # Register, Login, Me, Demo accounts
-└── client/                   # Frontend Vite + React + Tailwind CSS
-    ├── index.html            # App HTML & typography
-    ├── package.json          # React, Vite, Lucide-react, Tailwind v4
-    ├── vite.config.js        # Vite config with backend proxy
-    └── src/
-        ├── App.jsx           # Master application container & view manager
-        ├── index.css         # Tailwind styles & radar pulse keyframes
-        ├── main.jsx          # React DOM root entry
-        └── components/
-            ├── Navbar.jsx               # Infotact branding & ISO 9001 badges
-            ├── LoginPage.jsx            # Sign-in form with 1-click demo logins
-            ├── SignUpPage.jsx           # Avatar registration with live color picker
-            ├── ProximityRadarPreview.jsx# 2D Canvas spatial audio proximity engine
-            ├── SessionDashboard.jsx     # Post-login authenticated status card
-            └── ForgotPasswordModal.jsx  # Password recovery dialog
+├── README.md                 # Project documentation
+│
+├── frontend/                 # 🌐 FRONTEND (React, WebRTC, Canvas API)
+│   ├── index.html            # Entry HTML & typography
+│   ├── package.json          # React, Vite, Lucide-react, Socket.io-client, Tailwind v4
+│   ├── vite.config.js        # Vite config with backend & WebSocket proxying
+│   ├── public/               # Static assets
+│   └── src/
+│       ├── App.jsx           # Master application container & view manager
+│       ├── index.css         # Styling, radar pulses & audio wave keyframes
+│       ├── main.jsx          # React DOM root entry
+│       └── components/
+│           ├── VirtualOfficeWorld.jsx   # 2D Canvas rendering, WASD/mouse walking & socket sync
+│           ├── Navbar.jsx               # Infotact branding & world switcher
+│           ├── LoginPage.jsx            # Sign-in form with 1-click demo logins
+│           ├── SignUpPage.jsx           # Avatar registration with live color picker
+│           ├── ProximityRadarPreview.jsx# 2D Canvas spatial audio proximity engine
+│           ├── SessionDashboard.jsx     # Post-login authenticated status card
+│           └── ForgotPasswordModal.jsx  # Password recovery dialog
+│
+└── backend/                  # ⚙️ BACKEND (Node.js, Express, Socket.io, MongoDB)
+    ├── server.js             # Express & Socket.io server entry point (port 5000)
+    ├── package.json          # Express, Socket.io, Mongoose, JWT, bcryptjs, cors
+    ├── .env                  # PORT=5000 & MONGODB_URI=mongodb://localhost:27017/proxify
+    ├── sockets/
+    │   └── signaling.js      # WebSocket signaling server & coordinate broadcasting
+    ├── models/
+    │   ├── User.js           # Mongoose model with 2D planar geospatial index & $near helpers
+    │   └── OfficeSpace.js    # 2D office layout zones and obstacles schema
+    ├── middleware/
+    │   └── auth.js           # JWT authentication middleware
+    └── routes/
+        ├── auth.js           # Register, Login, Me, Demo accounts endpoints
+        └── spatial.js        # Geospatial $near queries and office world API
 ```
 
 ---
@@ -101,20 +116,35 @@ Both servers are currently configured and running:
 
 1. **Frontend Application:**
    ```bash
-   cd client
-   npm run dev
+   npm run frontend
    ```
-   *Accessible at: [http://localhost:3000](http://localhost:3000)*
+   *(or `cd frontend && npm run dev`)* — Accessible at: **[http://localhost:3000](http://localhost:3000)**
 
-2. **Backend Authentication Server:**
+2. **Backend Authentication & Signaling Server:**
    ```bash
-   cd server
-   npm start
+   npm run backend
    ```
-   *Accessible at: [http://localhost:5000](http://localhost:5000)*
+   *(or `cd backend && npm start`)* — Accessible at: **[http://localhost:5000](http://localhost:5000)**
 
 3. **Or run concurrently from root:**
    ```bash
-   npm run client
-   npm run server
+   npm run frontend
+   npm run backend
+   ```
+
+---
+
+## 🧪 Testing Week 1 Deliverables
+
+1. Open **[http://localhost:3000](http://localhost:3000)** in your browser.
+2. Click **"Guest World"** in the top navigation or log in with any 1-click demo user (*Dr. Aris*, *Priya*, or *Rohan*) and click **"Launch Virtual Office"**.
+3. **Keyboard Movement:** Press **W, A, S, D** or **Arrow Keys** to glide your avatar across the office floor.
+4. **Mouse Movement:** Click anywhere on the office floor; your avatar will smoothly walk to that coordinate!
+5. **Multi-User / Multi-Tab Synchronization:** Open a second browser tab or an Incognito window at **[http://localhost:3000](http://localhost:3000)**. Walk your avatar in one tab and watch it move in real-time in the other tab!
+6. **Earshot Proximity:** Walk within 130px of another avatar:
+   - Green acoustic connection lines appear dynamically.
+   - Volume gain percentage is calculated in real time.
+7. **Spatial Query Test:**
+   ```bash
+   curl "http://localhost:5000/api/spatial/nearby?x=200&y=200&radius=300"
    ```
