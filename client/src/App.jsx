@@ -10,6 +10,7 @@ import { Radio, ShieldCheck, MapPin, CheckCircle2, AlertCircle, Info, Sparkles }
 export default function App() {
   const [currentView, setCurrentView] = useState('login'); // 'login' | 'signup' | 'dashboard'
   const [currentUser, setCurrentUser] = useState(null);
+  const [savedSession, setSavedSession] = useState(null); // { user, token } detected but NOT auto-restored
   const [previewAvatarColor, setPreviewAvatarColor] = useState('#6366f1');
   const [previewName, setPreviewName] = useState('You');
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
@@ -33,23 +34,57 @@ export default function App() {
     checkBackend();
   }, []);
 
-  // Check stored user session
+  // Detect a previously saved session WITHOUT auto-restoring it. Opening the
+  // app always shows the login page; the stored identity is only resumed after
+  // the user explicitly confirms AND the backend validates the JWT.
   useEffect(() => {
     const storedUser = localStorage.getItem('proxispeak_user') || sessionStorage.getItem('proxispeak_user');
     const storedToken = localStorage.getItem('proxispeak_token') || sessionStorage.getItem('proxispeak_token');
 
     if (storedUser && storedToken) {
       try {
-        const parsed = JSON.parse(storedUser);
-        setCurrentUser(parsed);
-        setCurrentView('dashboard');
+        setSavedSession({ user: JSON.parse(storedUser), token: storedToken });
       } catch (e) {
-        // Clear corrupt storage
         localStorage.removeItem('proxispeak_user');
         sessionStorage.removeItem('proxispeak_user');
+        setSavedSession(null);
       }
     }
   }, []);
+
+  const clearStoredSession = () => {
+    localStorage.removeItem('proxispeak_token');
+    localStorage.removeItem('proxispeak_user');
+    sessionStorage.removeItem('proxispeak_token');
+    sessionStorage.removeItem('proxispeak_user');
+    setSavedSession(null);
+  };
+
+  const handleResumeSession = async () => {
+    if (!savedSession) return;
+    try {
+      const res = await fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${savedSession.token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          const freshUser = data.user || savedSession.user;
+          localStorage.setItem('proxispeak_user', JSON.stringify(freshUser));
+          setCurrentUser(freshUser);
+          setCurrentView('dashboard');
+          showToast(`Session resumed for ${freshUser.name || 'you'}.`, 'success');
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Session validation unavailable:', err);
+    }
+
+    // Token invalid, expired, or backend unreachable — never inherit the session.
+    clearStoredSession();
+    showToast('Saved session could not be validated. Please log in again.', 'error');
+  };
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type });
@@ -69,10 +104,7 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('proxispeak_token');
-    localStorage.removeItem('proxispeak_user');
-    sessionStorage.removeItem('proxispeak_token');
-    sessionStorage.removeItem('proxispeak_user');
+    clearStoredSession();
     setCurrentUser(null);
     setCurrentView('login');
     showToast('Signed out from ProxiSpeak workspace.', 'info');
@@ -123,6 +155,9 @@ export default function App() {
                   onSwitchToSignup={() => setCurrentView('signup')}
                   onOpenForgotPassword={() => setIsForgotPasswordOpen(true)}
                   showToast={showToast}
+                  restoredSession={savedSession}
+                  onResumeSession={handleResumeSession}
+                  onClearSession={clearStoredSession}
                 />
               ) : (
                 <SignUpPage

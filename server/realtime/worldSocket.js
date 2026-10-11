@@ -7,7 +7,8 @@ const {
   players,
   sanitizePosition,
   toPublicPlayer,
-  listPlayers
+  listPlayers,
+  getPlayerByUserId
 } = require('./worldState');
 
 // Throttle DB writes per player so that 30-60Hz client movement does not
@@ -76,6 +77,17 @@ function initWorldSocket(io) {
         y: spawn.y,
         joinedAt: Date.now()
       };
+
+      // Enforce ONE avatar per user. A tab refresh, React StrictMode double
+      // mount, or a reconnect race can otherwise leave a ghost socket for the
+      // same account — inflating the presence count while the map de-dupes it
+      // back to a single drawn avatar ("3 online, 2 visible").
+      const existing = getPlayerByUserId(player.id);
+      if (existing) {
+        players.delete(existing.socketId);
+        lastPersistAt.delete(existing.id);
+        io.emit('world:player-left', { id: existing.id });
+      }
 
       players.set(socket.id, player);
 

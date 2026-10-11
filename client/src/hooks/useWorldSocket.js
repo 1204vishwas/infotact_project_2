@@ -77,12 +77,16 @@ export default function useWorldSocket({ user, token }) {
         .filter((p) => p.id !== data.selfId)
         .forEach((p) => peersRef.current.set(p.id, p));
       commitPeers();
+      if (data.players && data.players.length > 0) {
+        setOnlineCount(data.players.length);
+      }
     };
 
     const handleJoined = (player) => {
       if (player.id === selfIdRef.current) return;
       peersRef.current.set(player.id, player);
       commitPeers();
+      setOnlineCount(peersRef.current.size + 1);
     };
 
     const handleMoved = ({ id, x, y }) => {
@@ -90,12 +94,15 @@ export default function useWorldSocket({ user, token }) {
       if (existing) {
         existing.x = x;
         existing.y = y;
+      } else {
+        peersRef.current.set(id, { id, x, y, name: 'Colleague', role: 'Team Member', avatarColor: '#6366f1', status: 'online' });
       }
     };
 
     const handleLeft = ({ id }) => {
       peersRef.current.delete(id);
       commitPeers();
+      setOnlineCount(peersRef.current.size + 1);
     };
 
     const handleStatus = ({ id, status: nextStatus }) => {
