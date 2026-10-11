@@ -3,18 +3,20 @@ import Navbar from './components/Navbar';
 import LoginPage from './components/LoginPage';
 import SignUpPage from './components/SignUpPage';
 import ProximityRadarPreview from './components/ProximityRadarPreview';
-import SessionDashboard from './components/SessionDashboard';
+import WorldCanvas from './components/WorldCanvas';
+import ProfilePanel from './components/ProfilePanel';
 import ForgotPasswordModal from './components/ForgotPasswordModal';
-import { Radio, ShieldCheck, MapPin, CheckCircle2, AlertCircle, Info, Sparkles } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, Sparkles } from 'lucide-react';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('login'); // 'login' | 'signup' | 'dashboard'
+  const [currentView, setCurrentView] = useState('login'); // 'login' | 'signup' | 'office' | 'profile'
   const [currentUser, setCurrentUser] = useState(null);
   const [savedSession, setSavedSession] = useState(null); // { user, token } detected but NOT auto-restored
   const [previewAvatarColor, setPreviewAvatarColor] = useState('#6366f1');
   const [previewName, setPreviewName] = useState('You');
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
   const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'offline'
+  const [socketStatus, setSocketStatus] = useState('idle'); // 'connecting' | 'connected' | 'offline' | 'idle'
   const [toast, setToast] = useState(null);
 
   // Check backend health
@@ -72,7 +74,8 @@ export default function App() {
           const freshUser = data.user || savedSession.user;
           localStorage.setItem('proxispeak_user', JSON.stringify(freshUser));
           setCurrentUser(freshUser);
-          setCurrentView('dashboard');
+          setSocketStatus('connecting');
+          setCurrentView('office');
           showToast(`Session resumed for ${freshUser.name || 'you'}.`, 'success');
           return;
         }
@@ -93,19 +96,28 @@ export default function App() {
     }, 4000);
   };
 
-  const handleLoginSuccess = (user, token) => {
+  const enterOffice = (user) => {
     setCurrentUser(user);
-    setCurrentView('dashboard');
+    setSocketStatus('connecting');
+    setCurrentView('office');
+  };
+
+  const handleLoginSuccess = (user, token) => {
+    localStorage.setItem('proxispeak_user', JSON.stringify(user));
+    localStorage.setItem('proxispeak_token', token);
+    enterOffice(user);
   };
 
   const handleSignupSuccess = (user, token) => {
-    setCurrentUser(user);
-    setCurrentView('dashboard');
+    localStorage.setItem('proxispeak_user', JSON.stringify(user));
+    localStorage.setItem('proxispeak_token', token);
+    enterOffice(user);
   };
 
   const handleLogout = () => {
     clearStoredSession();
     setCurrentUser(null);
+    setSocketStatus('idle');
     setCurrentView('login');
     showToast('Signed out from ProxiSpeak workspace.', 'info');
   };
@@ -114,6 +126,11 @@ export default function App() {
     if (color) setPreviewAvatarColor(color);
     if (name) setPreviewName(name);
   };
+
+  const sessionToken =
+    (typeof window !== 'undefined' &&
+      (localStorage.getItem('proxispeak_token') || sessionStorage.getItem('proxispeak_token'))) ||
+    null;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#090d16] text-slate-100 selection:bg-indigo-500 selection:text-white">
@@ -138,13 +155,23 @@ export default function App() {
       <Navbar
         currentView={currentView}
         setCurrentView={setCurrentView}
+        user={currentUser}
         backendStatus={backendStatus}
+        socketStatus={socketStatus}
+        onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col justify-center px-4 sm:px-6 lg:px-8 py-8 sm:py-12 max-w-7xl mx-auto w-full">
-        {currentView === 'dashboard' ? (
-          <SessionDashboard user={currentUser} onLogout={handleLogout} showToast={showToast} />
+        {currentView === 'office' ? (
+          <WorldCanvas
+            user={currentUser}
+            token={sessionToken}
+            showToast={showToast}
+            onStatusChange={setSocketStatus}
+          />
+        ) : currentView === 'profile' ? (
+          <ProfilePanel user={currentUser} onLogout={handleLogout} />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
             {/* Left Column: Auth Form (Sign Up or Login) */}
@@ -181,16 +208,18 @@ export default function App() {
                     "ProxiSpeak": Geospatial Proximity Audio Ecosystem
                   </h3>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Unlike rigid Zoom rooms, colleagues communicate by naturally walking over to peer clusters in a 2D overhead canvas. Distances are calculated in real time using MongoDB geospatial <code className="text-cyan-400 font-mono">$near</code> & <code className="text-cyan-400 font-mono">$geoWithin</code> queries with Web Audio API 3D spatial pan.
+                    Unlike rigid Zoom rooms, colleagues communicate by naturally walking over to peer clusters in a 2D overhead canvas. Distances are calculated in real time using the Socket.io world layer with Web Audio API 3D spatial pan.
                   </p>
                 </div>
               </div>
 
               {/* The Interactive Radar Visualizer */}
-              <ProximityRadarPreview
-                previewAvatarColor={previewAvatarColor}
-                previewName={previewName}
-              />
+              {ProximityRadarPreview && (
+                <ProximityRadarPreview
+                  previewAvatarColor={previewAvatarColor}
+                  previewName={previewName}
+                />
+              )}
             </div>
           </div>
         )}

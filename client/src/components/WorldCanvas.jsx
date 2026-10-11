@@ -1,13 +1,13 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
-  Compass,
+  Coffee,
   Keyboard,
-  MapPin,
   Mic,
   MicOff,
   MousePointer2,
   Navigation,
+  Palette,
   Radio,
   Users,
   Volume2,
@@ -26,40 +26,54 @@ const MAX_SPEED = 300; // px / second
 const ACCELERATION = 2600; // px / second^2
 const GRID_SIZE = 40;
 
-// Static office zones (carpet + label) and desk furniture.
+// Original ProxiSpeak office layout — four quadrants around the central
+// corridor. Accent colors mirror the original screenshot.
 const ZONES = [
-  { x: 60, y: 60, w: 340, h: 250, label: 'Developer Bay', rgb: '16,185,129' },
-  { x: 440, y: 60, w: 320, h: 210, label: 'Spatial Audio Lab', rgb: '99,102,241' },
-  { x: 800, y: 60, w: 340, h: 250, label: 'Product Pods', rgb: '245,158,11' },
-  { x: 60, y: 350, w: 470, h: 310, label: 'Collaboration Hall', rgb: '6,182,212' },
-  { x: 580, y: 350, w: 180, h: 310, label: 'Hallway', rgb: '100,116,139' },
-  { x: 800, y: 350, w: 340, h: 310, label: 'Lounge & Coffee', rgb: '139,92,246' }
+  { id: 'spatial', label: 'Spatial Audio Lab', icon: 'volume', x: 60, y: 60, w: 520, h: 270, rgb: '99,102,241' },
+  { id: 'webrtc', label: 'Core WebRTC Bay', icon: 'radio', x: 620, y: 60, w: 520, h: 270, rgb: '6,182,212' },
+  { id: 'design', label: 'Product & Design Hub', icon: 'palette', x: 60, y: 380, w: 520, h: 280, rgb: '139,92,246' },
+  { id: 'lounge', label: 'Breakout Lounge & Water Cooler', icon: 'coffee', x: 620, y: 380, w: 520, h: 280, rgb: '245,158,11' }
 ];
 
-const DESKS = [
-  { x: 100, y: 110, w: 80, h: 46 },
-  { x: 210, y: 110, w: 80, h: 46 },
-  { x: 100, y: 220, w: 80, h: 46 },
-  { x: 210, y: 220, w: 80, h: 46 },
-  { x: 480, y: 110, w: 110, h: 50 },
-  { x: 620, y: 110, w: 110, h: 50 },
-  { x: 840, y: 110, w: 80, h: 46 },
-  { x: 950, y: 110, w: 80, h: 46 },
-  { x: 840, y: 220, w: 80, h: 46 },
-  { x: 950, y: 220, w: 80, h: 46 },
-  { x: 100, y: 400, w: 120, h: 56 },
-  { x: 260, y: 400, w: 120, h: 56 },
-  { x: 840, y: 420, w: 120, h: 56 },
-  { x: 1000, y: 420, w: 110, h: 56 }
+// Rectangular / circular furniture placed inside the four zones.
+const FURNITURE = [
+  // Spatial Audio Lab — mixing consoles & listening table
+  { x: 105, y: 115, w: 118, h: 56, rgb: '99,102,241' },
+  { x: 285, y: 115, w: 118, h: 56, rgb: '99,102,241' },
+  { x: 105, y: 230, w: 118, h: 56, rgb: '99,102,241' },
+  { x: 285, y: 230, w: 118, h: 56, rgb: '99,102,241' },
+  { x: 470, y: 175, r: 42, shape: 'circle', rgb: '99,102,241' },
+
+  // Core WebRTC Bay — server rack + engineer desks
+  { x: 655, y: 100, w: 62, h: 130, shape: 'rack', rgb: '6,182,212' },
+  { x: 790, y: 115, w: 118, h: 56, rgb: '6,182,212' },
+  { x: 972, y: 115, w: 118, h: 56, rgb: '6,182,212' },
+  { x: 790, y: 230, w: 118, h: 56, rgb: '6,182,212' },
+  { x: 972, y: 230, w: 118, h: 56, rgb: '6,182,212' },
+
+  // Product & Design Hub — whiteboard, desks & brainstorm table
+  { x: 85, y: 405, w: 210, h: 34, shape: 'board', rgb: '139,92,246' },
+  { x: 115, y: 492, w: 118, h: 56, rgb: '139,92,246' },
+  { x: 295, y: 492, w: 118, h: 56, rgb: '139,92,246' },
+  { x: 470, y: 580, r: 36, shape: 'circle', rgb: '139,92,246' },
+
+  // Breakout Lounge & Water Cooler — lounge table, sofas, coolers
+  { x: 700, y: 440, r: 36, shape: 'circle', rgb: '245,158,11' },
+  { x: 690, y: 558, w: 132, h: 30, shape: 'sofa', rgb: '245,158,11' },
+  { x: 882, y: 558, w: 132, h: 30, shape: 'sofa', rgb: '245,158,11' },
+  { x: 1030, y: 420, r: 15, shape: 'water', rgb: '245,158,11' },
+  { x: 1085, y: 585, r: 13, shape: 'water', rgb: '245,158,11' }
 ];
 
 // Demo colleagues used only while the realtime backend is unreachable so the
 // canvas still demonstrates proximity behaviour offline.
 const OFFLINE_BOTS = [
-  { id: 'bot_aris', name: 'Dr. Aris Thorne', role: 'Audio Engineer', avatarColor: '#6366f1', home: { x: 600, y: 170 }, phase: 0.0, radius: 60 },
-  { id: 'bot_priya', name: 'Priya Sharma', role: 'Developer', avatarColor: '#10b981', home: { x: 230, y: 185 }, phase: 2.1, radius: 45 },
-  { id: 'bot_rohan', name: 'Rohan Mehta', role: 'Product Manager', avatarColor: '#f59e0b', home: { x: 920, y: 500 }, phase: 4.2, radius: 55 }
+  { id: 'bot_aris', name: 'Dr. Aris Thorne', role: 'Audio Engineer', avatarColor: '#6366f1', home: { x: 330, y: 175 }, phase: 0.0, radius: 50 },
+  { id: 'bot_priya', name: 'Priya Sharma', role: 'Developer', avatarColor: '#10b981', home: { x: 860, y: 540 }, phase: 2.1, radius: 45 },
+  { id: 'bot_rohan', name: 'Rohan Mehta', role: 'Product Manager', avatarColor: '#f59e0b', home: { x: 200, y: 500 }, phase: 4.2, radius: 55 }
 ];
+
+const ZONE_ICONS = { volume: Volume2, radio: Radio, palette: Palette, coffee: Coffee };
 
 const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -95,7 +109,7 @@ const roleAbbrev = (role) => {
   return map[role] || 'TEAM';
 };
 
-export default function WorldCanvas({ user, token, showToast }) {
+export default function WorldCanvas({ user, token, showToast, onStatusChange }) {
   const canvasRef = useRef(null);
   const { peersRef, status, peers, onlineCount, sendMove, setMuted } = useWorldSocket({ user, token });
 
@@ -117,9 +131,11 @@ export default function WorldCanvas({ user, token, showToast }) {
     clock: 0
   });
 
+  // Surface the realtime connection state up to the header indicators.
   useEffect(() => {
     statusRef.current = status;
-  }, [status]);
+    onStatusChange?.(status);
+  }, [status, onStatusChange]);
 
   const toggleMic = useCallback(() => {
     const next = !mutedRef.current;
@@ -129,9 +145,7 @@ export default function WorldCanvas({ user, token, showToast }) {
     if (showToast) showToast(next ? 'Microphone muted across earshot.' : 'Microphone live — broadcasting spatially.', next ? 'info' : 'success');
   }, [setMuted, showToast]);
 
-  // -------------------------------------------------------------------------
-  // Input handlers — keyboard (WASD / arrows) + mouse/pointer click-to-move
-  // -------------------------------------------------------------------------
+  // --------------------------- Input handlers -----------------------------
   useEffect(() => {
     const sim = simRef.current;
     const validKeys = ['w', 'a', 's', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'];
@@ -190,9 +204,7 @@ export default function WorldCanvas({ user, token, showToast }) {
     [pointerToWorld]
   );
 
-  // -------------------------------------------------------------------------
-  // Animation + rendering loop (imperative canvas, reads refs at 60fps)
-  // -------------------------------------------------------------------------
+  // --------------------------- Render loop --------------------------------
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
@@ -216,12 +228,14 @@ export default function WorldCanvas({ user, token, showToast }) {
     };
 
     const drawFloor = () => {
+      // Dark navy office floor (original design background).
       const bg = ctx.createLinearGradient(0, 0, OFFICE.width, OFFICE.height);
       bg.addColorStop(0, '#0b1120');
       bg.addColorStop(1, '#0f172a');
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, OFFICE.width, OFFICE.height);
 
+      // Subtle square grid.
       ctx.strokeStyle = 'rgba(30,41,59,0.9)';
       ctx.lineWidth = 1;
       for (let x = 0; x <= OFFICE.width; x += GRID_SIZE) {
@@ -241,24 +255,104 @@ export default function WorldCanvas({ user, token, showToast }) {
     const drawZones = () => {
       ZONES.forEach((z) => {
         ctx.fillStyle = `rgba(${z.rgb},0.05)`;
-        ctx.strokeStyle = `rgba(${z.rgb},0.25)`;
+        ctx.strokeStyle = `rgba(${z.rgb},0.35)`;
         ctx.lineWidth = 1.5;
-        ctx.setLineDash([6, 6]);
+        ctx.setLineDash([7, 7]);
         drawRoundRect(z.x, z.y, z.w, z.h, 16);
         ctx.fill();
         ctx.stroke();
         ctx.setLineDash([]);
-
-        ctx.fillStyle = `rgba(${z.rgb},0.55)`;
-        ctx.font = 'bold 13px "Plus Jakarta Sans", sans-serif';
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'alphabetic';
-        ctx.fillText(z.label.toUpperCase(), z.x + 14, z.y + 24);
       });
     };
 
     const drawFurniture = () => {
-      DESKS.forEach((d) => {
+      FURNITURE.forEach((d) => {
+        if (d.shape === 'circle') {
+          const glow = ctx.createRadialGradient(d.x, d.y, 2, d.x, d.y, d.r);
+          glow.addColorStop(0, `rgba(${d.rgb},0.22)`);
+          glow.addColorStop(1, `rgba(${d.rgb},0)`);
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.r + 10, 0, Math.PI * 2);
+          ctx.fillStyle = glow;
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(30,41,59,0.85)';
+          ctx.fill();
+          ctx.strokeStyle = `rgba(${d.rgb},0.45)`;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.r * 0.35, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${d.rgb},0.18)`;
+          ctx.fill();
+          return;
+        }
+
+        if (d.shape === 'water') {
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${d.rgb},0.2)`;
+          ctx.fill();
+          ctx.strokeStyle = `rgba(${d.rgb},0.7)`;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(d.x, d.y, Math.max(3, d.r * 0.3), 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${d.rgb},0.9)`;
+          ctx.fill();
+          return;
+        }
+
+        if (d.shape === 'rack') {
+          ctx.fillStyle = 'rgba(15,23,42,0.95)';
+          ctx.strokeStyle = `rgba(${d.rgb},0.6)`;
+          ctx.lineWidth = 1.5;
+          drawRoundRect(d.x, d.y, d.w, d.h, 6);
+          ctx.fill();
+          ctx.stroke();
+          for (let i = 0; i < 4; i += 1) {
+            ctx.fillStyle = `rgba(${d.rgb},${0.4 + i * 0.12})`;
+            ctx.fillRect(d.x + 6, d.y + 10 + i * 28, d.w - 12, 12);
+          }
+          return;
+        }
+
+        if (d.shape === 'board') {
+          ctx.fillStyle = 'rgba(30,41,59,0.7)';
+          ctx.strokeStyle = `rgba(${d.rgb},0.5)`;
+          ctx.lineWidth = 1.5;
+          drawRoundRect(d.x, d.y, d.w, d.h, 8);
+          ctx.fill();
+          ctx.stroke();
+          ctx.strokeStyle = `rgba(${d.rgb},0.25)`;
+          ctx.beginPath();
+          ctx.moveTo(d.x + 14, d.y + d.h / 2);
+          ctx.lineTo(d.x + d.w - 14, d.y + d.h / 2);
+          ctx.stroke();
+          return;
+        }
+
+        if (d.shape === 'sofa') {
+          ctx.fillStyle = 'rgba(51,65,85,0.9)';
+          ctx.strokeStyle = `rgba(${d.rgb},0.5)`;
+          ctx.lineWidth = 1.5;
+          drawRoundRect(d.x, d.y, d.w, d.h, 9);
+          ctx.fill();
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(d.x + 12, d.y + d.h / 2, 6, 0, Math.PI * 2);
+          ctx.fillStyle = `rgba(${d.rgb},0.5)`;
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(d.x + d.w - 12, d.y + d.h / 2, 6, 0, Math.PI * 2);
+          ctx.fill();
+          return;
+        }
+
+        // Standard rectangular desk with a glowing monitor bar.
         ctx.fillStyle = 'rgba(30,41,59,0.85)';
         ctx.strokeStyle = 'rgba(71,85,105,0.7)';
         ctx.lineWidth = 1;
@@ -266,13 +360,12 @@ export default function WorldCanvas({ user, token, showToast }) {
         ctx.fill();
         ctx.stroke();
 
-        // Monitor / desk highlight
-        ctx.fillStyle = 'rgba(56,189,248,0.16)';
+        ctx.fillStyle = `rgba(${d.rgb},0.18)`;
         drawRoundRect(d.x + 12, d.y + 10, d.w - 24, 6, 3);
         ctx.fill();
       });
 
-      // Office perimeter walls
+      // Office perimeter walls.
       ctx.strokeStyle = 'rgba(148,163,184,0.35)';
       ctx.lineWidth = 4;
       drawRoundRect(6, 6, OFFICE.width - 12, OFFICE.height - 12, 20);
@@ -290,7 +383,7 @@ export default function WorldCanvas({ user, token, showToast }) {
         ctx.fill();
       }
 
-      // Soft glow halo
+      // Soft glow halo.
       const glow = ctx.createRadialGradient(a.x, a.y, 2, a.x, a.y, radius * 2.4);
       glow.addColorStop(0, hexToRgba(color, 0.5));
       glow.addColorStop(1, hexToRgba(color, 0));
@@ -299,7 +392,7 @@ export default function WorldCanvas({ user, token, showToast }) {
       ctx.fillStyle = glow;
       ctx.fill();
 
-      // Body
+      // Body.
       ctx.beginPath();
       ctx.arc(a.x, a.y, radius, 0, Math.PI * 2);
       ctx.fillStyle = color;
@@ -308,14 +401,14 @@ export default function WorldCanvas({ user, token, showToast }) {
       ctx.strokeStyle = isSelf ? '#f8fafc' : 'rgba(248,250,252,0.75)';
       ctx.stroke();
 
-      // Initial
+      // Initial.
       ctx.fillStyle = '#0b1120';
       ctx.font = `bold ${isSelf ? 14 : 12}px "Plus Jakarta Sans", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText((a.name || '?').charAt(0).toUpperCase(), a.x, a.y + 1);
 
-      // Direction pointer for the local avatar
+      // Direction pointer for the local avatar.
       if (isSelf && (Math.abs(a.vx || 0) > 8 || Math.abs(a.vy || 0) > 8)) {
         const fx = a.x + Math.cos(a.facing) * (radius + 7);
         const fy = a.y + Math.sin(a.facing) * (radius + 7);
@@ -325,7 +418,7 @@ export default function WorldCanvas({ user, token, showToast }) {
         ctx.fill();
       }
 
-      // Name plate
+      // Name plate.
       const label = isSelf ? `${a.name || 'You'} (you)` : a.name || 'Colleague';
       ctx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
       ctx.textBaseline = 'alphabetic';
@@ -336,7 +429,7 @@ export default function WorldCanvas({ user, token, showToast }) {
       ctx.fillStyle = isSelf ? '#f8fafc' : '#cbd5e1';
       ctx.fillText(label, a.x, a.y + radius + 20);
 
-      // Role tag
+      // Role tag.
       ctx.font = '9px "JetBrains Mono", monospace';
       ctx.fillStyle = hexToRgba(color, 0.95);
       ctx.fillText(roleAbbrev(a.role), a.x, a.y - radius - 8);
@@ -375,7 +468,7 @@ export default function WorldCanvas({ user, token, showToast }) {
 
       const sim = simRef.current;
 
-      // ----- gather all remote avatars -----
+      // ----- gather remote avatars (real peers, or demo bots offline) -----
       const remote = Array.from(peersRef.current.values()).map((p) => ({ ...p }));
 
       if (statusRef.current === 'offline') {
@@ -464,7 +557,7 @@ export default function WorldCanvas({ user, token, showToast }) {
       drawZones();
       drawFurniture();
 
-      // Earshot radius around the local avatar
+      // Earshot radius around the local avatar (dashed circle).
       const pulse = 3 * Math.sin(sim.clock * 2.4);
       ctx.beginPath();
       ctx.arc(self.x, self.y, EARSHOT_RADIUS + pulse, 0, Math.PI * 2);
@@ -519,23 +612,20 @@ export default function WorldCanvas({ user, token, showToast }) {
   }, [peersRef, sendMove, user]);
 
   const connectionLabel = useMemo(() => {
-    if (status === 'connected') return 'Realtime Sync Live';
-    if (status === 'connecting') return 'Connecting to World...';
-    return 'Offline · Local Simulation';
+    if (status === 'connected') return 'Signaling Online';
+    if (status === 'connecting') return 'Connecting…';
+    return 'Offline · Local Sim';
   }, [status]);
 
   const earshotPeers = nearby.filter((p) => p.inEarshot);
 
   return (
-    <div className="w-full grid grid-cols-1 xl:grid-cols-12 gap-5">
-      {/* ----------------------------- WORLD ----------------------------- */}
-      <div className="xl:col-span-8 relative bg-slate-900/80 rounded-2xl border border-slate-800 p-4 shadow-2xl backdrop-blur-xl">
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-800/80">
+    <div className="w-full space-y-4">
+      <div className="relative bg-slate-900/60 rounded-2xl border border-slate-800/80 p-3 sm:p-4 shadow-2xl backdrop-blur-xl">
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-3">
           <div className="flex items-center space-x-2">
             <Activity className="w-4 h-4 text-cyan-400 animate-pulse" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">
-              Infotact Virtual Office · Canvas World
-            </h3>
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Infotact Virtual Office · 2D Canvas World</h3>
           </div>
           <div className="flex items-center gap-2 text-[11px]">
             <span className="flex items-center gap-1.5 font-mono px-2 py-0.5 rounded bg-slate-950 border border-slate-800 text-slate-300">
@@ -557,7 +647,7 @@ export default function WorldCanvas({ user, token, showToast }) {
           </div>
         </div>
 
-        <div className="relative mt-3 rounded-xl overflow-hidden border border-slate-800 bg-slate-950/90 shadow-inner">
+        <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950/90 shadow-inner">
           <canvas
             ref={canvasRef}
             width={OFFICE.width}
@@ -566,6 +656,31 @@ export default function WorldCanvas({ user, token, showToast }) {
             onPointerMove={handlePointerMove}
             className="w-full h-auto block cursor-crosshair touch-none select-none"
           />
+
+          {/* Zone headings — crisp React overlay mapped onto the world grid */}
+          {ZONES.map((z) => {
+            const Icon = ZONE_ICONS[z.icon] || Radio;
+            return (
+              <div
+                key={z.id}
+                className="absolute flex items-center gap-1.5 pointer-events-none"
+                style={{ left: `${(z.x / OFFICE.width) * 100}%`, top: `${(z.y / OFFICE.height) * 100}%` }}
+              >
+                <span
+                  className="flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-950/85 border backdrop-blur-sm"
+                  style={{ borderColor: `rgba(${z.rgb},0.45)` }}
+                >
+                  <Icon className="w-3 h-3" style={{ color: `rgb(${z.rgb})` }} />
+                  <span
+                    className="font-bold text-[10px] sm:text-xs uppercase tracking-wide"
+                    style={{ color: `rgb(${z.rgb})` }}
+                  >
+                    {z.label}
+                  </span>
+                </span>
+              </div>
+            );
+          })}
 
           {/* Live coordinate overlay */}
           <div className="absolute top-2 left-2 text-[10px] font-mono text-slate-300 bg-slate-900/90 px-2 py-1 rounded border border-slate-800 flex items-center space-x-1.5 backdrop-blur-sm">
@@ -582,21 +697,21 @@ export default function WorldCanvas({ user, token, showToast }) {
             <span className="flex items-center gap-1">
               <Keyboard className="w-3 h-3 text-cyan-400" /> WASD / Arrows
             </span>
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1 hidden sm:flex">
               <MousePointer2 className="w-3 h-3 text-cyan-400" /> Click to walk
             </span>
           </div>
 
-          {/* Earshot / audio gain indicator */}
+          {/* Colleagues in earshot — compact overlay */}
           <div className="absolute bottom-2 left-2 flex items-center space-x-2 bg-slate-900/95 px-2.5 py-1.5 rounded-lg border border-slate-800 backdrop-blur-sm">
             {hud.inEarshot ? (
               <>
                 <Volume2 className="w-3.5 h-3.5 text-emerald-400 animate-bounce" />
                 <div className="flex flex-col">
                   <span className="text-[10px] text-emerald-400 font-semibold leading-none">
-                    Earshot Active ({earshotPeers.length} nearby)
+                    {earshotPeers.length} colleague{earshotPeers.length !== 1 ? 's' : ''} in earshot
                   </span>
-                  <span className="text-[9px] text-slate-400 font-mono">Proximity Gain: {hud.gain}%</span>
+                  <span className="text-[9px] text-slate-400 font-mono mt-0.5">Proximity Gain: {hud.gain}%</span>
                 </div>
               </>
             ) : (
@@ -604,12 +719,13 @@ export default function WorldCanvas({ user, token, showToast }) {
                 <VolumeX className="w-3.5 h-3.5 text-slate-500" />
                 <div className="flex flex-col">
                   <span className="text-[10px] text-slate-400 font-medium leading-none">Out of Earshot</span>
-                  <span className="text-[9px] text-slate-500 font-mono">Proximity Gain: 0%</span>
+                  <span className="text-[9px] text-slate-500 font-mono mt-0.5">Walk closer to talk</span>
                 </div>
               </>
             )}
           </div>
 
+          {/* Mic toggle */}
           <button
             type="button"
             onClick={toggleMic}
@@ -638,87 +754,11 @@ export default function WorldCanvas({ user, token, showToast }) {
             <span className="font-mono text-indigo-300 text-sm">{EARSHOT_RADIUS}px</span>
           </div>
           <div className="p-2 rounded-lg bg-slate-950/70 border border-slate-800">
-            <span className="text-slate-500 block">Broadcast</span>
+            <span className="text-slate-500 block">Coordinate Broadcast</span>
             <span className={`font-mono text-sm ${status === 'connected' ? 'text-emerald-300' : 'text-amber-300'}`}>
               {status === 'connected' ? 'Streaming' : 'Local'}
             </span>
           </div>
-        </div>
-      </div>
-
-      {/* --------------------------- SIDEBAR ---------------------------- */}
-      <div className="xl:col-span-4 space-y-4">
-        <div className="bg-slate-900/80 rounded-2xl border border-slate-800 p-5 shadow-2xl backdrop-blur-xl">
-          <div className="flex items-center justify-between pb-3 border-b border-slate-800/80 mb-4">
-            <div className="flex items-center space-x-2">
-              <Compass className="w-4 h-4 text-indigo-400" />
-              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Colleagues Nearby</h3>
-            </div>
-            <span className="text-[10px] font-mono text-slate-500">{peers.length + (status === 'offline' ? OFFLINE_BOTS.length : 0)} in world</span>
-          </div>
-
-          {nearby.length === 0 ? (
-            <p className="text-xs text-slate-500 py-6 text-center">
-              No colleagues in the office yet. Move around or invite your team to join the world.
-            </p>
-          ) : (
-            <ul className="space-y-2.5 max-h-80 overflow-y-auto pr-1">
-              {nearby.map((p) => (
-                <li
-                  key={p.id}
-                  className={`flex items-center justify-between p-2.5 rounded-xl border transition-colors ${
-                    p.inEarshot ? 'bg-emerald-950/30 border-emerald-600/40' : 'bg-slate-950/60 border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-center space-x-2.5 min-w-0">
-                    <span
-                      className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-xs font-bold text-slate-950"
-                      style={{ backgroundColor: p.avatarColor }}
-                    >
-                      {(p.name || '?').charAt(0).toUpperCase()}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="text-xs font-semibold text-slate-200 truncate">{p.name}</p>
-                      <p className="text-[10px] text-slate-500 truncate">
-                        {p.role} · {p.distance}px
-                      </p>
-                    </div>
-                  </div>
-                  <div className="text-right shrink-0">
-                    {p.inEarshot ? (
-                      <span className="text-[10px] font-mono text-emerald-400 flex items-center gap-1">
-                        <Volume2 className="w-3 h-3" />
-                        {p.gain}%
-                      </span>
-                    ) : (
-                      <span className="text-[10px] font-mono text-slate-600">muted</span>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
-        <div className="bg-slate-900/80 rounded-2xl border border-slate-800 p-5 shadow-2xl backdrop-blur-xl">
-          <div className="flex items-center space-x-2 pb-3 border-b border-slate-800/80 mb-4">
-            <Radio className="w-4 h-4 text-cyan-400" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-300">Coordinate Broadcasting</h3>
-          </div>
-          <ul className="space-y-2 text-[11px] text-slate-400">
-            <li className="flex items-start gap-2">
-              <MapPin className="w-3.5 h-3.5 text-indigo-400 mt-0.5 shrink-0" />
-              Movement is broadcast to the Socket.io world layer &amp; persisted to the MongoDB <code className="text-cyan-400 font-mono">2d</code> geospatial index.
-            </li>
-            <li className="flex items-start gap-2">
-              <Volume2 className="w-3.5 h-3.5 text-emerald-400 mt-0.5 shrink-0" />
-              Entering the {EARSHOT_RADIUS}px earshot crossfades peer audio via the Web Audio API.
-            </li>
-            <li className="flex items-start gap-2">
-              <Keyboard className="w-3.5 h-3.5 text-cyan-400 mt-0.5 shrink-0" />
-              Hold <span className="text-slate-200 font-mono">WASD</span>/arrows for fluid movement, or click anywhere on the floor to walk over.
-            </li>
-          </ul>
         </div>
       </div>
     </div>
