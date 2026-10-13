@@ -121,7 +121,7 @@ project_2/
 
 ---
 
-## 🏃 Running the Application
+### 🏃 Running the Application
 
 Both servers are currently configured and running:
 
