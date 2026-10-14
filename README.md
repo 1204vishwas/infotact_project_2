@@ -79,7 +79,7 @@ This module turns the authenticated profile into a living 2D virtual office:
 
 ---
 
-## 🛠️ Project Structure
+### 🛠️ Project Structure
 
 ```
 project_2/
