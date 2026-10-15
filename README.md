@@ -79,7 +79,7 @@ This module turns the authenticated profile into a living 2D virtual office:
 
 ---
 
-## 🛠️ Project Structure
+### 🛠️ Project Structure
 
 ```
 project_2/
@@ -121,7 +121,7 @@ project_2/
 
 ---
 
-## 🏃 Running the Application (Updated)
+### 🏃 Running the Application
 
 Both servers are currently configured and running:
 
