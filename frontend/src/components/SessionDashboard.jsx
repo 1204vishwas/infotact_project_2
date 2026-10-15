@@ -107,7 +107,7 @@ export default function SessionDashboard({ user, onLogout, onLaunchWorld }) {
                 </span>
               </div>
               <p className="text-[11px] sm:text-xs text-slate-400 font-mono mt-0.5 truncate">
-                @{user?.username || 'user'} • {user?.email || 'user@infotact.in'}
+                @{user?.username || 'user'} • {user?.email || 'user@gmail.com'}
               </p>
             </div>
           </div>

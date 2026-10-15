@@ -13,7 +13,7 @@ const initDemoAccounts = async () => {
   const demos = [
     {
       name: 'Dr. Aris Thorne',
-      email: 'aris@infotact.in',
+      email: 'aris.thorne@gmail.com',
       username: 'aris_infotact',
       password: 'password123',
       role: 'Audio Engineer',
@@ -24,7 +24,7 @@ const initDemoAccounts = async () => {
     },
     {
       name: 'Priya Sharma',
-      email: 'priya@infotact.in',
+      email: 'priya.sharma@gmail.com',
       username: 'priya_dev',
       password: 'password123',
       role: 'Developer',
@@ -35,7 +35,7 @@ const initDemoAccounts = async () => {
     },
     {
       name: 'Rohan Mehta',
-      email: 'rohan@infotact.in',
+      email: 'rohan.mehta@gmail.com',
       username: 'rohan_lead',
       password: 'password123',
       role: 'Product Manager',
@@ -48,7 +48,7 @@ const initDemoAccounts = async () => {
 
   for (const demo of demos) {
     try {
-      const exists = await User.findOne({ $or: [{ email: demo.email }, { username: demo.username }] });
+      const exists = await User.findOne({ username: demo.username });
       if (!exists) {
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(demo.password, salt);
@@ -56,6 +56,9 @@ const initDemoAccounts = async () => {
           ...demo,
           password: hashedPassword
         });
+      } else if (exists.email !== demo.email) {
+        exists.email = demo.email;
+        await exists.save();
       }
     } catch (e) {
       // In-memory store fallback
@@ -99,6 +102,14 @@ router.post('/register', async (req, res) => {
 
     const normalizedEmail = email.toLowerCase().trim();
     const normalizedUsername = username.toLowerCase().trim();
+
+    // Enforce that only Gmail addresses (@gmail.com) are allowed
+    if (!normalizedEmail.endsWith('@gmail.com')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Registration restricted: Only Gmail addresses (@gmail.com) are allowed. Please use your personal or work @gmail.com address.'
+      });
+    }
 
     // Check if user already exists in MongoDB
     let existingUser = null;
@@ -225,6 +236,14 @@ router.post('/login', async (req, res) => {
 
     const cleanIdentifier = identifier.toLowerCase().trim();
 
+    // Enforce that email identifiers must be a Gmail account (@gmail.com)
+    if (cleanIdentifier.includes('@') && !cleanIdentifier.endsWith('@gmail.com')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Access restricted: Only Gmail accounts (@gmail.com) are permitted. Please log in with your @gmail.com address.'
+      });
+    }
+
     // Find user by email or username
     let user = null;
     try {
@@ -295,7 +314,169 @@ router.post('/login', async (req, res) => {
 });
 
 // ==========================================
-// 3. GET /api/auth/me (Protected)
+// 3. POST /api/auth/social-login (Google & Facebook)
+// ==========================================
+router.post('/social-login', async (req, res) => {
+  try {
+    const { provider, name, email, avatarColor, providerId } = req.body;
+
+    if (!provider || !name || !email) {
+      return res.status(400).json({
+        success: false,
+        message: 'Provider, name, and email are required for social authentication.'
+      });
+    }
+
+    const providerLower = provider.toLowerCase();
+    if (providerLower !== 'google' && providerLower !== 'facebook') {
+      return res.status(400).json({
+        success: false,
+        message: 'Unsupported social provider. Only Google and Facebook are supported.'
+      });
+    }
+
+    const normalizedEmail = email.toLowerCase().trim();
+
+    // Enforce that social accounts must use @gmail.com
+    if (!normalizedEmail.endsWith('@gmail.com')) {
+      return res.status(400).json({
+        success: false,
+        message: `Authentication with ${providerUpper(providerLower)} requires a verified Gmail address (@gmail.com).`
+      });
+    }
+
+    // Check if user already exists with this email
+    let user = null;
+    let usingMongo = true;
+    try {
+      user = await User.findOne({ email: normalizedEmail });
+    } catch (e) {
+      usingMongo = false;
+      for (const u of inMemoryUsers.values()) {
+        if (u.email === normalizedEmail) {
+          user = u;
+          break;
+        }
+      }
+    }
+
+    if (!user) {
+      // Auto-generate clean unique username from email
+      const baseUsername = normalizedEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '_');
+      let finalUsername = baseUsername;
+
+      let usernameTaken = false;
+      try {
+        const existingUsername = await User.findOne({ username: finalUsername });
+        if (existingUsername) usernameTaken = true;
+      } catch (e) {
+        for (const u of inMemoryUsers.values()) {
+          if (u.username === finalUsername) {
+            usernameTaken = true;
+            break;
+          }
+        }
+      }
+
+      if (usernameTaken) {
+        finalUsername = `${baseUsername}_${Math.floor(Math.random() * 899 + 100)}`;
+      }
+
+      const defaultColors = {
+        google: '#ea4335',
+        facebook: '#1877f2'
+      };
+      const chosenColor = avatarColor || defaultColors[providerLower] || '#6366f1';
+
+      // Secure dummy password hash for social oauth accounts
+      const salt = await bcrypt.genSalt(10);
+      const randomPassword = `oauth_${providerLower}_${Math.random().toString(36).substring(2)}${Date.now()}`;
+      const hashedPassword = await bcrypt.hash(randomPassword, salt);
+
+      const initialCoordinates = [
+        Math.floor(Math.random() * 400) + 120,
+        Math.floor(Math.random() * 300) + 120
+      ];
+
+      const departmentName = providerLower === 'google' ? 'Google Workspace Team' : 'Facebook Workplace Hub';
+
+      if (usingMongo) {
+        user = await User.create({
+          name: name.trim(),
+          email: normalizedEmail,
+          username: finalUsername,
+          password: hashedPassword,
+          role: 'Developer',
+          avatarColor: chosenColor,
+          avatarIcon: providerLower,
+          department: departmentName,
+          location: initialCoordinates
+        });
+      } else {
+        user = {
+          _id: 'user_' + Date.now(),
+          name: name.trim(),
+          email: normalizedEmail,
+          username: finalUsername,
+          password: hashedPassword,
+          role: 'Developer',
+          avatarColor: chosenColor,
+          avatarIcon: providerLower,
+          department: departmentName,
+          location: initialCoordinates,
+          status: 'online',
+          createdAt: new Date()
+        };
+        inMemoryUsers.set(normalizedEmail, user);
+      }
+    }
+
+    // Generate JWT Token
+    const token = jwt.sign(
+      {
+        id: user._id,
+        email: user.email,
+        username: user.username,
+        role: user.role
+      },
+      JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Signed in successfully via ${providerUpper(providerLower)} with ${normalizedEmail}!`,
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        username: user.username,
+        role: user.role,
+        avatarColor: user.avatarColor || '#3b82f6',
+        avatarIcon: user.avatarIcon || providerLower,
+        department: user.department || 'Infotact Engineering',
+        location: user.location,
+        status: user.status || 'online'
+      }
+    });
+  } catch (error) {
+    console.error('Social Login Error:', error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Server error occurred during social login.'
+    });
+  }
+});
+
+function providerUpper(p) {
+  if (p === 'google') return 'Google';
+  if (p === 'facebook') return 'Facebook';
+  return p.charAt(0).toUpperCase() + p.slice(1);
+}
+
+// ==========================================
+// 4. GET /api/auth/me (Protected)
 // ==========================================
 router.get('/me', authenticateToken, async (req, res) => {
   try {
@@ -326,7 +507,7 @@ router.get('/me', authenticateToken, async (req, res) => {
 });
 
 // ==========================================
-// 4. GET /api/auth/demo-accounts
+// 5. GET /api/auth/demo-accounts
 // ==========================================
 router.get('/demo-accounts', (req, res) => {
   return res.status(200).json({
@@ -334,21 +515,21 @@ router.get('/demo-accounts', (req, res) => {
     accounts: [
       {
         name: 'Dr. Aris Thorne',
-        identifier: 'aris@infotact.in',
+        identifier: 'aris.thorne@gmail.com',
         role: 'Audio Engineer',
         avatarColor: '#6366f1',
         description: 'Web Audio API & 3D Spatial Audio Lead'
       },
       {
         name: 'Priya Sharma',
-        identifier: 'priya@infotact.in',
+        identifier: 'priya.sharma@gmail.com',
         role: 'Developer',
         avatarColor: '#10b981',
         description: 'React Canvas & WebRTC Specialist'
       },
       {
         name: 'Rohan Mehta',
-        identifier: 'rohan@infotact.in',
+        identifier: 'rohan.mehta@gmail.com',
         role: 'Product Manager',
         avatarColor: '#f59e0b',
         description: 'Infotact Virtual Office Coordinator'

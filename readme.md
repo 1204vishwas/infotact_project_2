@@ -83,10 +83,11 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
    - `GET /api/spatial/room` — Returns office zones, obstacles, and spawn coordinates.
    - `GET /api/spatial/nearby?x=...&y=...&radius=...` — Executes native MongoDB `$near` query and returns closest avatars ranked by proximity distance.
 4. **Authentication & Identity System (`backend/routes/auth.js`):**
-   - Full Name, Work Email (`@infotact.in`), Username, Role, and 7-palette avatar color customizer.
-   - Password encryption using `bcryptjs` with salt rounds.
-   - Session authentication via `jsonwebtoken` (JWT).
-   - Pre-seeded 1-click demo accounts (*Dr. Aris Thorne*, *Priya Sharma*, *Rohan Mehta*).
+   - **Gmail-Only Policy:** Registration, login, and password reset strictly require verified Gmail addresses (`@gmail.com`).
+   - **Social Sign-In / Sign-Up:** 1-click **Continue with Google** and **Continue with Facebook** authentication via `POST /api/auth/social-login`.
+   - **Interactive Social OAuth Dialog (`SocialAuthModal.jsx`):** High-fidelity Google and Facebook account picker modals with Gmail validation.
+   - **Password Security & JWT:** `bcryptjs` password hashing with salt rounds and 7-day signed JWT tokens.
+   - **Pre-seeded Demo Accounts:** 1-click demo logins (*Dr. Aris Thorne*, *Priya Sharma*, *Rohan Mehta*) updated with `@gmail.com` addresses.
 
 ---
 
