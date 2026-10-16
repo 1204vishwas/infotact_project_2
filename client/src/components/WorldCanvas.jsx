@@ -16,13 +16,15 @@ import {
   WifiOff
 } from 'lucide-react';
 import useWorldSocket from '../hooks/useWorldSocket';
-import useWebRTC, { SPEAKING_THRESHOLD } from '../hooks/useWebRTC';
+import useWebRTC, { SPEAKING_THRESHOLD, EARSHOT } from '../hooks/useWebRTC';
 
 // ---------------------------------------------------------------------------
 // World configuration — must mirror server/realtime/worldState.js OFFICE_BOUNDS
 // ---------------------------------------------------------------------------
 const OFFICE = { width: 1200, height: 720, padding: 48 };
-const EARSHOT_RADIUS = 150; // 100-150px proximity "earshot" from the spec
+// Single source of truth — mirrors useWebRTC's EARSHOT so the drawn circle,
+// the "in earshot" HUD, and the actual P2P connection threshold always agree.
+const EARSHOT_RADIUS = EARSHOT;
 const MAX_SPEED = 300; // px / second
 const ACCELERATION = 2600; // px / second^2
 const GRID_SIZE = 40;
@@ -119,11 +121,22 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
   const [nearby, setNearby] = useState([]);
   const [localStream, setLocalStream] = useState(null);
 
-  // WebRTC - only connect to users within 100px proximity
-  const { connections, selfLevel, selfLevelRef, levelsRef, playTestTone, audioReady, resumeAudio, pcDebug } = useWebRTC({
-    enabled: true,
+  // WebRTC — only negotiate with real colleagues within EARSHOT (100px). The
+  // hook also drops offline bots, so the "live P2P link" count is honest.
+  const {
+    selfLevel,
+    selfLevelRef,
+    levelsRef,
+    playTestTone,
+    audioReady,
+    resumeAudio,
+    pcDebug,
+    playbackBlocked,
+    diagnostics
+  } = useWebRTC({
+    enabled: status === 'connected',
     selfId,
-    peers: nearby.filter(p => p.distance <= 100),
+    peers: nearby,
     localStream,
     socketRef
   });
@@ -149,22 +162,23 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
   }, [status, onStatusChange]);
 
   const handleTestTone = useCallback(() => {
-    if (!connections.length) {
-      if (showToast) showToast('No live P2P link yet — move within 100px of a colleague first.', 'info');
+    const linkCount = diagnostics.peers.length;
+    if (!linkCount) {
+      if (showToast) showToast(`No P2P link yet — move within ${EARSHOT}px of a colleague first.`, 'info');
       return;
     }
     const sent = playTestTone();
     if (sent) {
       if (showToast) {
         showToast(
-          `Test tone sent to ${connections.length} colleague${connections.length !== 1 ? 's' : ''} — listen on the other tab.`,
+          `Test tone sent to ${linkCount} colleague${linkCount !== 1 ? 's' : ''} — listen on the other tab.`,
           'success'
         );
       }
     } else if (showToast) {
       showToast('Microphone not ready — allow mic access first.', 'error');
     }
-  }, [connections.length, playTestTone, showToast]);
+  }, [diagnostics.peers.length, playTestTone, showToast]);
 
   const toggleMic = useCallback(() => {
     const next = !mutedRef.current;
@@ -174,12 +188,25 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
     if (showToast) showToast(next ? 'Microphone muted across earshot.' : 'Microphone live — broadcasting spatially.', next ? 'info' : 'success');
   }, [setMuted, showToast]);
 
-  // Initialize WebRTC audio with getUserMedia
+  // Initialize WebRTC audio with getUserMedia.
+  //
+  // React StrictMode intentionally mounts effects twice in development. If we
+  // naively call getUserMedia in both runs we end up with TWO live microphone
+  // streams — one of which is orphaned and never stopped (holding the mic
+  // indicator on and leaking a track). We guard each run with its own
+  // `cancelled` flag: any stream that resolves after its effect was cleaned up
+  // is stopped immediately, so exactly one live stream survives.
   useEffect(() => {
-    let stream = null;
+    let cancelled = false;
+    let acquired = null;
     const initMic = async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        acquired = stream;
         console.log('[mic] got user media, tracks:', stream.getAudioTracks().length);
         setLocalStream(stream);
       } catch (err) {
@@ -190,9 +217,9 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
       initMic();
     }
     return () => {
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-      }
+      cancelled = true;
+      if (acquired) acquired.getTracks().forEach((t) => t.stop());
+      setLocalStream(null);
     };
   }, []);
 
@@ -691,8 +718,17 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
   }, [status]);
 
   const earshotPeers = nearby.filter((p) => p.inEarshot);
-  const nearby100 = nearby.filter((p) => p.distance <= 100);
+  const nearby100 = nearby.filter((p) => p.distance <= EARSHOT);
   const speakingSelf = !muted && selfLevel > SPEAKING_THRESHOLD;
+
+  // Honest, real-state indicators (no optimistic flags):
+  //  - micReady      : we actually captured a live microphone track
+  //  - liveLinks     : peer connections whose RTC state is truly "connected"
+  //  - remoteAudible : a received remote track is playing AND carries energy
+  const micReady = diagnostics.mic.captured && diagnostics.mic.enabled;
+  const liveLinks = diagnostics.peers.filter((p) => p.connectionState === 'connected').length;
+  const connectingLinks = diagnostics.peers.filter((p) => p.connectionState !== 'connected').length;
+  const remoteAudible = diagnostics.peers.some((p) => p.playing && p.remoteLevel > SPEAKING_THRESHOLD);
 
   return (
     <div className="w-full space-y-4">
@@ -808,15 +844,17 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
           {/* Proximity groups (users within 100px) */}
           {nearby100.length > 0 && (
             <div className="absolute bottom-2 left-2 ml-[220px] flex items-center space-x-2 bg-slate-900/95 px-2.5 py-1.5 rounded-lg border border-slate-800 backdrop-blur-sm">
-              <Radio className="w-3.5 h-3.5 text-cyan-400" />
+              <Radio className={`w-3.5 h-3.5 ${liveLinks > 0 ? 'text-cyan-400' : 'text-slate-500'}`} />
               <div className="flex flex-col">
                 <span className="text-[10px] text-cyan-400 font-semibold leading-none">
-                  {nearby100.length} user{nearby100.length !== 1 ? 's' : ''} within 100px
+                  {nearby100.length} user{nearby100.length !== 1 ? 's' : ''} within {EARSHOT}px
                 </span>
-                <span className="text-[9px] text-slate-400 mt-0.5">
-                  {connections.length > 0
-                    ? `${connections.length} live P2P audio link${connections.length !== 1 ? 's' : ''}`
-                    : 'WebRTC P2P negotiating…'}
+                <span className={`text-[9px] mt-0.5 ${liveLinks > 0 ? 'text-emerald-300' : 'text-amber-300'}`}>
+                  {liveLinks > 0
+                    ? `${liveLinks} connected P2P audio link${liveLinks !== 1 ? 's' : ''}`
+                    : connectingLinks > 0
+                    ? 'WebRTC P2P connecting…'
+                    : 'No P2P link yet'}
                 </span>
               </div>
             </div>
@@ -824,22 +862,47 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
 
           {/* Mic level meter + toggle */}
           <div className="absolute bottom-2 right-2 flex items-center gap-2">
+            <div
+              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border backdrop-blur-sm text-[8px] font-semibold ${
+                remoteAudible
+                  ? 'bg-emerald-950/80 border-emerald-700/60 text-emerald-300'
+                  : liveLinks > 0
+                  ? 'bg-slate-900/95 border-slate-800 text-slate-300'
+                  : 'bg-slate-900/95 border-slate-800 text-slate-500'
+              }`}
+              title="Whether audio received from nearby colleagues is actually playing"
+            >
+              <Volume2 className="w-3 h-3" />
+              {remoteAudible ? 'HEARING' : liveLinks > 0 ? 'LINK UP' : 'NO REMOTE'}
+            </div>
             <button
               type="button"
               onClick={resumeAudio}
-              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border backdrop-blur-sm text-[8px] font-semibold ${audioReady ? 'bg-slate-900/95 border-slate-800 text-emerald-400' : 'bg-amber-500/90 border-amber-400 text-slate-900 animate-pulse'}`}
-              title={audioReady ? 'Audio output unlocked' : 'Click to allow this tab to play sound'}
+              className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border backdrop-blur-sm text-[8px] font-semibold ${
+                playbackBlocked
+                  ? 'bg-rose-500/90 border-rose-400 text-slate-900 animate-pulse'
+                  : audioReady
+                  ? 'bg-slate-900/95 border-slate-800 text-emerald-400'
+                  : 'bg-amber-500/90 border-amber-400 text-slate-900 animate-pulse'
+              }`}
+              title={
+                playbackBlocked
+                  ? 'Browser blocked playback — click to allow sound'
+                  : audioReady
+                  ? 'Audio output context running'
+                  : 'Click to allow this tab to play sound'
+              }
             >
-              {audioReady ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
-              {audioReady ? 'AUDIO OK' : 'TAP FOR AUDIO'}
+              {playbackBlocked ? <VolumeX className="w-3 h-3" /> : audioReady ? <Volume2 className="w-3 h-3" /> : <VolumeX className="w-3 h-3" />}
+              {playbackBlocked ? 'BLOCKED · TAP' : audioReady ? 'OUTPUT OK' : 'TAP FOR AUDIO'}
             </button>
             <div
               className="flex items-center gap-1.5 bg-slate-900/95 px-2 py-1.5 rounded-lg border border-slate-800 backdrop-blur-sm"
-              title="Your microphone input level"
+              title={`Your microphone input level${micReady ? '' : ' — microphone not captured'}`}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  speakingSelf ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
+                  !micReady ? 'bg-rose-500' : speakingSelf ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
                 }`}
               />
               <div className="w-16 h-1.5 rounded-full bg-slate-800 overflow-hidden">
@@ -848,8 +911,8 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
                   style={{ width: `${Math.round(selfLevel * 100)}%` }}
                 />
               </div>
-              <span className="text-[9px] font-mono text-slate-400 w-8 text-right">
-                {muted ? 'MUTE' : speakingSelf ? 'TALK' : 'IDLE'}
+              <span className={`text-[9px] font-mono w-8 text-right ${!micReady ? 'text-rose-400' : 'text-slate-400'}`}>
+                {!micReady ? 'NO MIC' : muted ? 'MUTE' : speakingSelf ? 'TALK' : 'IDLE'}
               </span>
             </div>
             <button
