@@ -7,8 +7,9 @@ const CONFIG = {
   ]
 };
 
-// Must match the 100px WebRTC proximity threshold used by the world.
-const EARSHOT = 100;
+// 100px proximity "earshot" — the single source of truth for when a
+// peer-to-peer audio link is allowed to exist. Must match WorldCanvas.
+export const EARSHOT = 100;
 
 // Normalised RMS above which a microphone is considered "actively speaking".
 export const SPEAKING_THRESHOLD = 0.08;
@@ -29,33 +30,55 @@ function readLevel(entry) {
 
 /**
  * useWebRTC
- * Full peer-to-peer audio over WebRTC, negotiated through the Socket.io
+ * Real peer-to-peer audio over WebRTC, negotiated through the Socket.io
  * signaling relay (world:offer / world:answer / world:ice-candidate).
  *
- * - Only colleagues within EARSHOT (100px) are connected.
- * - Uses the "perfect negotiation" pattern so simultaneous offers resolve
- *   deterministically and renegotiation (e.g. mic arriving late) is safe.
- * - Remote audio is routed through a per-peer GainNode so volume falls off
- *   with distance (proximity "spatial" audio).
- * - Exposes per-peer mic levels so the UI can show "speaking" indicators.
+ * Design notes (why it is built this way):
+ * - Only colleagues within EARSHOT (100px) get a peer connection.
+ * - Exactly ONE side (the lexicographically smaller user id) is the
+ *   "initiator" and creates the SDP offer. The other side only answers. This
+ *   removes offer glare entirely — the previous implementation had both sides
+ *   offer simultaneously, and the polite peer's implicit rollback left it with
+ *   zero ICE candidates, so ICE never connected.
+ * - An audio transceiver is created with direction "sendrecv" up front, so the
+ *   local microphone is attached later with replaceTrack() — no renegotiation
+ *   is ever required.
+ * - Remote audio is attached to a real <audio autoplay> element per peer and
+ *   played via element.play(); play() rejections (autoplay policy) are caught
+ *   and surfaced. Proximity attenuation uses element.volume. A separate Web
+ *   Audio analyser branch drives the "speaking" ring on the canvas.
+ * - Diagnostics report the REAL state (mic track, ICE/connection state, remote
+ *   track received, playback state) rather than optimistic UI flags.
  */
 export default function useWebRTC({ enabled, selfId, peers, localStream, socketRef }) {
   const [connections, setConnections] = useState([]);
   const [selfLevel, setSelfLevel] = useState(0);
   const [audioReady, setAudioReady] = useState(false);
   const [pcDebug, setPcDebug] = useState('pcs=0');
-  const signalRef = useRef({ offerTx: 0, offerRx: 0, answerTx: 0, answerRx: 0, iceTx: 0, iceRx: 0 });
-  const connectionsRef = useRef(new Map()); // peerId -> RTCPeerConnection
-  const pendingIceRef = useRef(new Map()); // peerId -> RTCIceCandidateInit[]
-  const gainNodesRef = useRef(new Map()); // peerId -> GainNode
-  const analysersRef = useRef(new Map()); // peerId -> { analyser, data }
-  const localAnalyserRef = useRef(null); // { analyser, data }
-  const micSourceRef = useRef(null); // MediaStreamAudioSourceNode of the local mic
-  const mixDestRef = useRef(null); // MediaStreamAudioDestinationNode (outgoing mix)
+  const [playbackBlocked, setPlaybackBlocked] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(() => ({
+    mic: { granted: false, captured: false, trackState: 'none', enabled: false, muted: true, label: '' },
+    audioContext: 'none',
+    peers: []
+  }));
+
+  const pcsRef = useRef(new Map());          // peerId -> RTCPeerConnection
+  const sendStreamRef = useRef(null);        // stable outgoing MediaStream (carries msid)
+  if (sendStreamRef.current === null && typeof MediaStream !== "undefined") {
+    sendStreamRef.current = new MediaStream();
+  }
+  const lastSeenRef = useRef(new Map());      // peerId -> timestamp (teardown hysteresis)
+  const audioElsRef = useRef(new Map());     // peerId -> HTMLAudioElement
+  const analysersRef = useRef(new Map());    // peerId -> { analyser, data }
+  const pendingIceRef = useRef(new Map());   // peerId -> RTCIceCandidateInit[]
+  const peerInfoRef = useRef(new Map());     // peerId -> { distance }
+  const outgoingTrackRef = useRef(null);     // current local microphone track
+  const localAnalyserRef = useRef(null);     // { analyser, data } for the mic meter
   const audioCtxRef = useRef(null);
-  // Latest 0..1 level per participant id (including self) for the canvas.
-  const levelsRef = useRef(new Map());
+  const levelsRef = useRef(new Map());       // participant id -> 0..1 level
   const selfLevelRef = useRef(0);
+  const signalRef = useRef({ offerTx: 0, offerRx: 0, answerTx: 0, answerRx: 0, iceTx: 0, iceRx: 0 });
+  const playbackBlockedRef = useRef(false);
 
   const getAudioContext = useCallback(() => {
     if (typeof window === "undefined") return null;
@@ -64,138 +87,174 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
     if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
       audioCtxRef.current = new AudioCtx();
       audioCtxRef.current.onstatechange = () => {
-        setAudioReady(!!audioCtxRef.current && audioCtxRef.current.state === "running");
+        const running = !!audioCtxRef.current && audioCtxRef.current.state === "running";
+        setAudioReady(running);
+        if (running) {
+          playbackBlockedRef.current = false;
+          setPlaybackBlocked(false);
+        }
       };
     }
     if (audioCtxRef.current.state === "suspended") {
-      audioCtxRef.current
-        .resume()
-        .then(() => setAudioReady(audioCtxRef.current ? audioCtxRef.current.state === "running" : false))
-        .catch(() => {});
-    } else {
-      setAudioReady(audioCtxRef.current.state === "running");
+      audioCtxRef.current.resume().catch(() => {});
     }
+    setAudioReady(audioCtxRef.current.state === "running");
     return audioCtxRef.current;
   }, []);
 
-  // Explicitly unlock audio playback — call from a click handler on the
-  // "Tap for audio" prompt when AudioContext was blocked by autoplay policy.
-  const resumeAudio = useCallback(() => {
-    const ctx = getAudioContext();
-    const sync = () => setAudioReady(ctx ? ctx.state === "running" : false);
-    if (ctx && ctx.state === "suspended") {
-      ctx.resume().then(sync).catch(sync);
-    } else {
-      sync();
+  const ensureAudioElement = useCallback((peerId) => {
+    if (typeof document === "undefined") return null;
+    let el = audioElsRef.current.get(peerId);
+    if (!el) {
+      el = document.createElement("audio");
+      el.autoplay = true;
+      el.playsInline = true;
+      el.setAttribute("playsinline", "");
+      el.muted = false;
+      el.style.display = "none";
+      el.dataset.peerId = String(peerId);
+      document.body.appendChild(el);
+      audioElsRef.current.set(peerId, el);
     }
-  }, [getAudioContext]);
+    return el;
+  }, []);
 
-  // The track we actually transmit: the mixed destination (mic + test tone)
-  // when available, otherwise the raw microphone track.
-  const getOutgoingTrack = useCallback(() => {
-    const dest = mixDestRef.current;
-    const mixed = dest && dest.stream.getAudioTracks()[0];
-    if (mixed) return { track: mixed, stream: dest.stream };
-    const mic = localStream && localStream.getAudioTracks()[0];
-    if (mic) return { track: mic, stream: localStream };
-    return null;
-  }, [localStream]);
+  const markPlaybackBlocked = useCallback((blocked) => {
+    playbackBlockedRef.current = blocked;
+    setPlaybackBlocked(blocked);
+  }, []);
 
-  // Route an incoming remote stream through a gain node so we can attenuate
-  // it by proximity before it reaches the speakers, and tap it with an
-  // analyser for the speaking indicator.
+  // Attach a received remote stream to a playable <audio> element and tap it
+  // with an analyser for the speaking indicator.
   const attachRemoteAudio = useCallback(
     (peerId, stream) => {
+      const el = ensureAudioElement(peerId);
+      if (el) {
+        try {
+          el.srcObject = stream;
+          el.muted = false;
+          const p = el.play();
+          if (p && typeof p.catch === "function") {
+            p.then(() => markPlaybackBlocked(false)).catch((err) => {
+              console.warn("[rtc] remote playback blocked:", err && err.message);
+              markPlaybackBlocked(true);
+            });
+          }
+        } catch (err) {
+          console.warn("[rtc] failed to start remote playback:", err);
+          markPlaybackBlocked(true);
+        }
+      }
+
       const ctx = getAudioContext();
       if (!ctx) return;
-      const existing = gainNodesRef.current.get(peerId);
-      if (existing) {
-        try {
-          existing.disconnect();
-        } catch (e) {
-          /* noop */
-        }
+      const existing = analysersRef.current.get(peerId);
+      if (existing && existing.source) {
+        try { existing.source.disconnect(); } catch (e) { /* noop */ }
       }
       try {
         const source = ctx.createMediaStreamSource(stream);
-        const gain = ctx.createGain();
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 512;
-        gain.gain.value = 1;
-        source.connect(gain);
-        gain.connect(analyser);
-        analyser.connect(ctx.destination);
-        gainNodesRef.current.set(peerId, gain);
-        analysersRef.current.set(peerId, { analyser, data: new Uint8Array(analyser.fftSize) });
-      } catch (e) {
-        console.warn("Failed to attach remote audio:", e);
+        const sink = ctx.createMediaStreamDestination();
+        source.connect(analyser);
+        analyser.connect(sink); // pulled by a silent sink — analysis only
+        analysersRef.current.set(peerId, {
+          analyser,
+          data: new Uint8Array(analyser.fftSize),
+          source,
+          sink
+        });
+      } catch (err) {
+        console.warn("[rtc] failed to attach remote analyser:", err);
       }
     },
-    [getAudioContext]
+    [ensureAudioElement, getAudioContext, markPlaybackBlocked]
   );
 
   const teardown = useCallback((peerId) => {
-    const pc = connectionsRef.current.get(peerId);
+    const pc = pcsRef.current.get(peerId);
     if (pc) {
-      try {
-        pc.close();
-      } catch (e) {
-        /* noop */
-      }
+      try { pc.close(); } catch (e) { /* noop */ }
     }
-    connectionsRef.current.delete(peerId);
+    pcsRef.current.delete(peerId);
     pendingIceRef.current.delete(peerId);
-    const gain = gainNodesRef.current.get(peerId);
-    if (gain) {
-      try {
-        gain.disconnect();
-      } catch (e) {
-        /* noop */
-      }
-      gainNodesRef.current.delete(peerId);
+    peerInfoRef.current.delete(peerId);
+
+    const entry = analysersRef.current.get(peerId);
+    if (entry) {
+      try { entry.source && entry.source.disconnect(); } catch (e) { /* noop */ }
+      try { entry.sink && entry.sink.disconnect(); } catch (e) { /* noop */ }
     }
     analysersRef.current.delete(peerId);
     levelsRef.current.delete(peerId);
+
+    const el = audioElsRef.current.get(peerId);
+    if (el) {
+      try { el.pause(); } catch (e) { /* noop */ }
+      el.srcObject = null;
+      if (el.parentNode) el.parentNode.removeChild(el);
+    }
+    audioElsRef.current.delete(peerId);
+
     setConnections((prev) => prev.filter((c) => c.peerId !== peerId));
   }, []);
 
+  const teardownAll = useCallback(() => {
+    Array.from(pcsRef.current.keys()).forEach(teardown);
+    lastSeenRef.current.clear();
+    setConnections([]);
+  }, [teardown]);
+
+  const emit = useCallback(
+    (event, payload) => {
+      const socket = socketRef.current;
+      if (socket && socket.connected) {
+        socket.emit(event, payload);
+        return true;
+      }
+      console.warn(`[rtc] socket offline — dropped ${event} for`, payload && payload.target);
+      return false;
+    },
+    [socketRef]
+  );
+
   const createPeerConnection = useCallback(
     (peerId) => {
-      if (connectionsRef.current.has(peerId)) return connectionsRef.current.get(peerId);
+      if (pcsRef.current.has(peerId)) return pcsRef.current.get(peerId);
+      if (!enabled || !selfId) return null;
 
       const pc = new RTCPeerConnection(CONFIG);
       pc._peerId = peerId;
-      console.log('[rtc] create pc for peer', peerId, 'selfId', selfId, 'polite', String(selfId) > String(peerId));
-      // Perfect negotiation: the peer with the lexicographically larger id
-      // is "polite" and yields on an offer collision.
-      pc._polite = String(selfId) > String(peerId);
-      pc._makingOffer = false;
-      pc._ignoreOffer = false;
-      pc._isSettingRemoteAnswerPending = false;
-      connectionsRef.current.set(peerId, pc);
+      // Deterministic offerer: smaller id initiates. Removes offer glare.
+      pc._initiator = String(selfId) < String(peerId);
+      pcsRef.current.set(peerId, pc);
       pendingIceRef.current.set(peerId, []);
+      peerInfoRef.current.set(peerId, peerInfoRef.current.get(peerId) || { distance: undefined });
 
-      const socket = socketRef.current;
+      console.log('[rtc] create pc', peerId, 'selfId', selfId, 'initiator', pc._initiator);
 
-      pc.onnegotiationneeded = async () => {
-        try {
-          pc._makingOffer = true;
-          await pc.setLocalDescription();
-          if (socket && socket.connected) {
-            signalRef.current.offerTx += 1;
-            socket.emit("world:offer", { target: peerId, offer: pc.localDescription });
-          }
-        } catch (err) {
-          console.error("Offer negotiation failed:", err);
-        } finally {
-          pc._makingOffer = false;
+      // The INITIATOR creates the single sendrecv audio transceiver and offers.
+      // The ANSWERER creates no transceiver of its own — it adopts the one
+      // carried by the incoming offer. This guarantees exactly one m-line, so
+      // both peers end up with a symmetric sendrecv link (each hears the other).
+      if (pc._initiator) {
+        const track = outgoingTrackRef.current;
+        if (track && sendStreamRef.current && !sendStreamRef.current.getTracks().includes(track)) {
+          sendStreamRef.current.addTrack(track);
         }
-      };
+        const transceiver = pc.addTransceiver(track || "audio", {
+          direction: "sendrecv",
+          streams: sendStreamRef.current ? [sendStreamRef.current] : []
+        });
+        pc._audioTransceiver = transceiver;
+      }
 
       pc.onicecandidate = ({ candidate }) => {
-        if (candidate && socket && socket.connected) {
-          signalRef.current.iceTx += 1;
-          socket.emit("world:ice-candidate", { target: peerId, candidate });
+        if (candidate) {
+          if (emit("world:ice-candidate", { target: peerId, candidate })) {
+            signalRef.current.iceTx += 1;
+          }
         }
       };
 
@@ -204,83 +263,128 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
         setConnections((prev) =>
           prev.map((c) => (c.peerId === peerId ? { ...c, state } : c))
         );
-        if (state === "failed" || state === "closed") teardown(peerId);
+        if (state === "failed") {
+          console.warn("[rtc] connection failed, tearing down", peerId);
+          teardown(peerId);
+        } else if (state === "closed") {
+          teardown(peerId);
+        }
       };
 
-      pc.ontrack = ({ streams }) => {
-        const stream = streams[0];
-        console.log('[rtc] ontrack from', peerId, 'audioTracks', stream ? stream.getAudioTracks().length : 0);
-        if (!stream) return;
+      pc.ontrack = (event) => {
+        const track = event.track;
+        const el = ensureAudioElement(peerId);
+        // Prefer the stream announced in the SDP (msid). When the remote added
+        // a bare transceiver/track there is no msid, so streams[] is empty —
+        // we then reuse/create a stream on the audio element and add the track
+        // ourselves. Either way the remote track ends up attached and playable.
+        let stream = (event.streams && event.streams[0]) || null;
+        if (!stream) {
+          stream = el && el.srcObject instanceof MediaStream ? el.srcObject : new MediaStream();
+        }
+        if (track && !stream.getTracks().includes(track)) {
+          stream.addTrack(track);
+        }
+        console.log('[rtc] ontrack from', peerId, 'tracks', stream.getAudioTracks().length, 'kind', track && track.kind);
+
         setConnections((prev) => {
           const exists = prev.find((c) => c.peerId === peerId);
           if (exists) {
             return prev.map((c) => (c.peerId === peerId ? { ...c, remoteStream: stream } : c));
           }
-          return [...prev, { peerId, remoteStream: stream, pc }];
+          return [...prev, { peerId, remoteStream: stream, pc, state: pc.connectionState }];
         });
         attachRemoteAudio(peerId, stream);
       };
 
-      const outgoing = getOutgoingTrack();
-      if (outgoing) {
-        pc.addTrack(outgoing.track, outgoing.stream);
-      } else {
-        // No microphone yet — still negotiate so we can receive their audio.
-        pc.addTransceiver("audio", { direction: "recvonly" });
+      if (pc._initiator) {
+        (async () => {
+          try {
+            await pc.setLocalDescription();
+            if (emit("world:offer", { target: peerId, offer: pc.localDescription })) {
+              signalRef.current.offerTx += 1;
+            }
+          } catch (err) {
+            console.error("[rtc] failed to create offer:", err);
+          }
+        })();
       }
 
       return pc;
     },
-    [selfId, socketRef, attachRemoteAudio, getOutgoingTrack, teardown]
+    [enabled, selfId, emit, attachRemoteAudio, teardown, ensureAudioElement]
   );
 
   const flushPendingIce = useCallback(async (peerId, pc) => {
     const list = pendingIceRef.current.get(peerId) || [];
     for (const candidate of list) {
-      try {
-        await pc.addIceCandidate(candidate);
-      } catch (e) {
-        /* noop */
-      }
+      try { await pc.addIceCandidate(candidate); } catch (e) { /* noop */ }
     }
     pendingIceRef.current.set(peerId, []);
   }, []);
 
-  const handleDescription = useCallback(
-    async (from, description) => {
-      if (!description) return;
+  const handleOffer = useCallback(
+    async (from, offer) => {
+      if (!offer) return;
       const pc = createPeerConnection(from);
-      const socket = socketRef.current;
-
-      const readyForOffer =
-        !pc._makingOffer && (pc.signalingState === "stable" || pc._isSettingRemoteAnswerPending);
-      const offerCollision = description.type === "offer" && !readyForOffer;
-
-      pc._ignoreOffer = !pc._polite && offerCollision;
-      if (pc._ignoreOffer) return;
-
+      if (!pc) return;
       try {
-        pc._isSettingRemoteAnswerPending = description.type === "answer";
-        await pc.setRemoteDescription(description);
-        pc._isSettingRemoteAnswerPending = false;
-        await flushPendingIce(from, pc);
-        if (description.type === "offer") {
-          await pc.setLocalDescription();
-          if (socket && socket.connected) {
-            signalRef.current.answerTx += 1;
-            socket.emit("world:answer", { target: from, answer: pc.localDescription });
+        // If a previous negotiation is still in flight, roll back cleanly
+        // before applying the fresh offer.
+        if (pc.signalingState !== "stable") {
+          await pc.setRemoteDescription({ type: "rollback" });
+        }
+        await pc.setRemoteDescription(offer);
+
+        // Adopt the audio transceiver created by the remote offer and attach
+        // our own microphone to it so the answer is sendrecv (we talk back).
+        const transceiver = pc.getTransceivers().find(
+          (t) => t.receiver && t.receiver.track && t.receiver.track.kind === "audio"
+        );
+        if (transceiver) {
+          pc._audioTransceiver = transceiver;
+          const track = outgoingTrackRef.current;
+          if (track) {
+            if (sendStreamRef.current && !sendStreamRef.current.getTracks().includes(track)) {
+              sendStreamRef.current.addTrack(track);
+            }
+            try { await transceiver.sender.replaceTrack(track); } catch (e) { /* noop */ }
+          }
+          if (!String(transceiver.direction).includes("send")) {
+            transceiver.direction = "sendrecv";
           }
         }
+
+        await flushPendingIce(from, pc);
+        await pc.setLocalDescription();
+        if (emit("world:answer", { target: from, answer: pc.localDescription })) {
+          signalRef.current.answerTx += 1;
+        }
       } catch (err) {
-        console.error("Failed to apply remote description:", err);
+        console.error("[rtc] failed to handle offer from", from, err);
       }
     },
-    [createPeerConnection, flushPendingIce, socketRef]
+    [createPeerConnection, flushPendingIce, emit]
+  );
+
+  const handleAnswer = useCallback(
+    async (from, answer) => {
+      if (!answer) return;
+      const pc = pcsRef.current.get(from);
+      if (!pc) return;
+      try {
+        await pc.setRemoteDescription(answer);
+        await flushPendingIce(from, pc);
+      } catch (err) {
+        console.error("[rtc] failed to handle answer from", from, err);
+      }
+    },
+    [flushPendingIce]
   );
 
   const handleIceCandidate = useCallback(async (from, candidate) => {
     if (!candidate) return;
-    const pc = connectionsRef.current.get(from);
+    const pc = pcsRef.current.get(from);
     if (!pc || !pc.remoteDescription) {
       const list = pendingIceRef.current.get(from) || [];
       list.push(candidate);
@@ -290,18 +394,18 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
     try {
       await pc.addIceCandidate(candidate);
     } catch (err) {
-      if (!pc._ignoreOffer) console.warn("Failed to add ICE candidate:", err);
+      console.warn("[rtc] failed to add ICE candidate from", from, err);
     }
   }, []);
 
-  // Subscribe to the signaling relay once the socket + identity are ready.
+  // ---- Signaling subscription --------------------------------------------
   useEffect(() => {
     if (!enabled || !selfId) return undefined;
     const socket = socketRef.current;
     if (!socket) return undefined;
 
-    const onOffer = ({ from, offer }) => { signalRef.current.offerRx += 1; handleDescription(from, offer); };
-    const onAnswer = ({ from, answer }) => { signalRef.current.answerRx += 1; handleDescription(from, answer); };
+    const onOffer = ({ from, offer }) => { signalRef.current.offerRx += 1; handleOffer(from, offer); };
+    const onAnswer = ({ from, answer }) => { signalRef.current.answerRx += 1; handleAnswer(from, answer); };
     const onIce = ({ from, candidate }) => { signalRef.current.iceRx += 1; handleIceCandidate(from, candidate); };
 
     socket.on("world:offer", onOffer);
@@ -313,124 +417,74 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
       socket.off("world:answer", onAnswer);
       socket.off("world:ice-candidate", onIce);
     };
-  }, [enabled, selfId, socketRef, handleDescription, handleIceCandidate]);
+  }, [enabled, selfId, socketRef, handleOffer, handleAnswer, handleIceCandidate]);
 
-  // Open / close peer connections as colleagues walk in and out of earshot.
+  // ---- Open / close peer connections as colleagues enter earshot ----------
   useEffect(() => {
     if (!enabled || !selfId) {
-      Array.from(connectionsRef.current.keys()).forEach(teardown);
-      setConnections([]);
+      teardownAll();
       return;
     }
 
+    const nearby = new Map();
     peers.forEach((peer) => {
-      if (peer.id === selfId) return;
-      const withinEarshot = peer.distance === undefined || peer.distance <= EARSHOT;
-      if (withinEarshot) createPeerConnection(peer.id);
+      if (!peer || peer.id === selfId) return;
+      if (String(peer.id).startsWith("bot_")) return; // never negotiate with demo bots
+      const within = peer.distance === undefined || peer.distance <= EARSHOT;
+      if (within) nearby.set(peer.id, peer);
+      peerInfoRef.current.set(peer.id, { distance: peer.distance });
     });
 
-    Array.from(connectionsRef.current.keys()).forEach((peerId) => {
-      const stillNearby = peers.some(
-        (p) => p.id === peerId && (p.distance === undefined || p.distance <= EARSHOT)
-      );
-      if (!stillNearby) teardown(peerId);
+    // Hysteresis: keep an existing link for a short grace period when a peer
+    // briefly drops out of `nearby` (HUD re-ranking / a stale position frame).
+    // Without this the pc is torn down and rebuilt on every flicker, which
+    // churns transceivers and can strand a half-negotiated connection.
+    Array.from(pcsRef.current.keys()).forEach((peerId) => {
+      if (nearby.has(peerId)) {
+        lastSeenRef.current.set(peerId, Date.now());
+        return;
+      }
+      const seen = lastSeenRef.current.get(peerId) || 0;
+      if (Date.now() - seen > 2500) {
+        lastSeenRef.current.delete(peerId);
+        teardown(peerId);
+      }
     });
-  }, [enabled, selfId, peers, createPeerConnection, teardown]);
 
-  // Build the outgoing audio mix (microphone + optional test tone) once the
-  // mic arrives, and repoint any already-connected peers at it. Because the
-  // tone is generated digitally it survives echo-cancellation, so this works
-  // even when both clients run in tabs of the same machine.
+    nearby.forEach((peer) => {
+      lastSeenRef.current.set(peer.id, Date.now());
+      if (!pcsRef.current.has(peer.id)) createPeerConnection(peer.id);
+    });
+
+    // Proximity attenuation through each playback element's volume.
+    nearby.forEach((peer) => {
+      const el = audioElsRef.current.get(peer.id);
+      if (!el) return;
+      const distance = typeof peer.distance === "number" ? peer.distance : 0;
+      const proximity = Math.max(0, Math.min(1, 1 - distance / EARSHOT));
+      el.volume = Math.max(0.25, 0.4 + 0.6 * proximity);
+    });
+  }, [enabled, selfId, peers, createPeerConnection, teardown, teardownAll]);
+
+  // ---- Keep the outgoing sender pointed at the live microphone ------------
   useEffect(() => {
-    if (!localStream) {
-      micSourceRef.current = null;
-      mixDestRef.current = null;
-      return undefined;
+    const track = localStream && localStream.getAudioTracks().length
+      ? localStream.getAudioTracks()[0]
+      : null;
+    outgoingTrackRef.current = track;
+    if (track && sendStreamRef.current && !sendStreamRef.current.getTracks().includes(track)) {
+      sendStreamRef.current.addTrack(track);
     }
-    const ctx = getAudioContext();
-    if (!ctx) return undefined;
-
-    let source;
-    let dest;
-    try {
-      source = ctx.createMediaStreamSource(localStream);
-      dest = ctx.createMediaStreamDestination();
-      source.connect(dest);
-    } catch (e) {
-      micSourceRef.current = null;
-      mixDestRef.current = null;
-      return undefined;
-    }
-
-    micSourceRef.current = source;
-    mixDestRef.current = dest;
-
-    const outgoingTrack = dest.stream.getAudioTracks()[0];
-    connectionsRef.current.forEach((pc) => {
-      const sender = pc.getSenders().find((s) => s.track && s.track.kind === "audio");
-      if (sender && outgoingTrack) {
-        sender.replaceTrack(outgoingTrack).catch(() => {});
-      } else if (outgoingTrack) {
-        try {
-          pc.addTrack(outgoingTrack, dest.stream);
-        } catch (e) {
-          /* noop */
-        }
+    pcsRef.current.forEach((pc) => {
+      const transceiver = pc._audioTransceiver;
+      if (transceiver && transceiver.sender && track) {
+        transceiver.sender.replaceTrack(track).catch(() => {});
       }
     });
-
-    return () => {
-      try {
-        source.disconnect();
-      } catch (e) {
-        /* noop */
-      }
-      try {
-        dest.disconnect();
-      } catch (e) {
-        /* noop */
-      }
-      micSourceRef.current = null;
-      mixDestRef.current = null;
-    };
+    if (track) getAudioContext();
   }, [localStream, getAudioContext]);
 
-  // Inject a short beep into the outgoing WebRTC mix so a remote peer can prove
-  // its playback path. Returns false if the mic/mix isn't ready yet.
-  const playTestTone = useCallback(() => {
-    const ctx = getAudioContext();
-    const dest = mixDestRef.current;
-    if (!ctx || !dest) return false;
-
-    const osc = ctx.createOscillator();
-    const tone = ctx.createGain();
-    osc.type = "sine";
-    osc.frequency.value = 440;
-    const now = ctx.currentTime;
-    tone.gain.setValueAtTime(0, now);
-    tone.gain.linearRampToValueAtTime(0.5, now + 0.04);
-    tone.gain.setValueAtTime(0.5, now + 0.9);
-    tone.gain.linearRampToValueAtTime(0, now + 1.3);
-    osc.connect(tone);
-    tone.connect(dest);
-    osc.start(now);
-    osc.stop(now + 1.4);
-    osc.onended = () => {
-      try {
-        osc.disconnect();
-      } catch (e) {
-        /* noop */
-      }
-      try {
-        tone.disconnect();
-      } catch (e) {
-        /* noop */
-      }
-    };
-    return true;
-  }, [getAudioContext]);
-
-  // Tap the local microphone with an analyser so we can render an input meter.
+  // ---- Microphone input meter (analysis only — never routed to speakers) --
   useEffect(() => {
     if (!localStream) {
       localAnalyserRef.current = null;
@@ -442,9 +496,11 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
       const source = ctx.createMediaStreamSource(localStream);
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
-      source.connect(analyser); // analysis only — never routed to destination
+      const sink = ctx.createMediaStreamDestination();
+      source.connect(analyser);
+      analyser.connect(sink);
       localAnalyserRef.current = { analyser, data: new Uint8Array(analyser.fftSize) };
-    } catch (e) {
+    } catch (err) {
       localAnalyserRef.current = null;
     }
     return () => {
@@ -452,7 +508,7 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
     };
   }, [localStream, getAudioContext]);
 
-  // Sample all microphones ~11Hz and publish the levels.
+  // ---- Sample all microphones ~11Hz and publish levels --------------------
   useEffect(() => {
     const id = setInterval(() => {
       const local = readLevel(localAnalyserRef.current);
@@ -467,24 +523,26 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
     return () => clearInterval(id);
   }, [selfId]);
 
-  // Scale each remote peer's volume by distance for proximity "spatial" audio.
-  // A 0.3 floor keeps a connected colleague audible even near the 100px edge.
-  useEffect(() => {
-    peers.forEach((peer) => {
-      const gain = gainNodesRef.current.get(peer.id);
-      if (!gain) return;
-      const distance = typeof peer.distance === "number" ? peer.distance : EARSHOT;
-      const proximity = Math.max(0, Math.min(1, 1 - distance / EARSHOT));
-      const value = 0.3 + 0.7 * proximity;
-      try {
-        gain.gain.value = value;
-      } catch (e) {
-        /* noop */
+  // ---- Explicitly unlock audio playback (user gesture) --------------------
+  const resumeAudio = useCallback(() => {
+    const ctx = getAudioContext();
+    let anyPlaying = false;
+    audioElsRef.current.forEach((el) => {
+      const p = el.play();
+      if (p && typeof p.then === "function") {
+        p.then(() => { anyPlaying = true; }).catch(() => {});
       }
     });
-  }, [peers]);
+    const sync = () => setAudioReady(ctx ? ctx.state === "running" : false);
+    if (ctx && ctx.state === "suspended") {
+      ctx.resume().then(() => { sync(); markPlaybackBlocked(false); }).catch(sync);
+    } else {
+      sync();
+      if (anyPlaying || audioElsRef.current.size === 0) markPlaybackBlocked(false);
+    }
+  }, [getAudioContext, markPlaybackBlocked]);
 
-  // Browsers keep AudioContext suspended until a user gesture — resume early.
+  // Resume on the first user gesture anywhere in the tab.
   useEffect(() => {
     const resume = () => getAudioContext();
     window.addEventListener("pointerdown", resume);
@@ -495,35 +553,144 @@ export default function useWebRTC({ enabled, selfId, peers, localStream, socketR
     };
   }, [getAudioContext]);
 
-  // Tear everything down when the world canvas unmounts.
+  // ---- Test tone: temporarily replace the outgoing track with a beep ------
+  const playTestTone = useCallback(() => {
+    const ctx = getAudioContext();
+    if (!ctx) return false;
+    const dest = ctx.createMediaStreamDestination();
+    const osc = ctx.createOscillator();
+    const tone = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 440;
+    const now = ctx.currentTime;
+    tone.gain.setValueAtTime(0, now);
+    tone.gain.linearRampToValueAtTime(0.5, now + 0.04);
+    tone.gain.setValueAtTime(0.5, now + 0.9);
+    tone.gain.linearRampToValueAtTime(0, now + 1.3);
+    osc.connect(tone);
+    tone.connect(dest);
+    const toneTrack = dest.stream.getAudioTracks()[0];
+    const micTrack = outgoingTrackRef.current;
+    let used = false;
+    pcsRef.current.forEach((pc) => {
+      const sender = pc._audioTransceiver && pc._audioTransceiver.sender;
+      if (sender && toneTrack) {
+        sender.replaceTrack(toneTrack).catch(() => {});
+        used = true;
+      }
+    });
+    if (!used) return false;
+    osc.start(now);
+    osc.stop(now + 1.4);
+    osc.onended = () => {
+      pcsRef.current.forEach((pc) => {
+        const sender = pc._audioTransceiver && pc._audioTransceiver.sender;
+        if (sender && micTrack) sender.replaceTrack(micTrack).catch(() => {});
+      });
+      try { osc.disconnect(); } catch (e) { /* noop */ }
+      try { tone.disconnect(); } catch (e) { /* noop */ }
+    };
+    return true;
+  }, [getAudioContext]);
+
+  // ---- Tear everything down on unmount ------------------------------------
   useEffect(
     () => () => {
-      Array.from(connectionsRef.current.keys()).forEach(teardown);
+      teardownAll();
       if (audioCtxRef.current) {
-        try {
-          audioCtxRef.current.close();
-        } catch (e) {
-          /* noop */
-        }
+        try { audioCtxRef.current.close(); } catch (e) { /* noop */ }
         audioCtxRef.current = null;
       }
     },
-    [teardown]
+    [teardownAll]
   );
 
-  // Diagnostics: expose peer-connection + signaling state so the UI can show
-  // exactly where a handshake stalls.
+  // ---- Honest diagnostics -------------------------------------------------
   useEffect(() => {
-    const id = setInterval(() => {
-      const pcs = Array.from(connectionsRef.current.entries());
+    let cancelled = false;
+    const tick = async () => {
+      const pcs = Array.from(pcsRef.current.entries());
       const s = signalRef.current;
       const info = pcs
         .map(([pid, pc]) => `${String(pid).slice(-4)}:${pc.connectionState}/${pc.iceConnectionState}/${pc.signalingState}`)
         .join(' ') || 'none';
-      setPcDebug(`pcs=${pcs.length} tx(o${s.offerTx}a${s.answerTx}i${s.iceTx}) rx(o${s.offerRx}a${s.answerRx}i${s.iceRx}) [${info}]`);
-    }, 700);
-    return () => clearInterval(id);
+      if (!cancelled) {
+        setPcDebug(`pcs=${pcs.length} tx(o${s.offerTx}a${s.answerTx}i${s.iceTx}) rx(o${s.offerRx}a${s.answerRx}i${s.iceRx}) [${info}]`);
+      }
+
+      const track = outgoingTrackRef.current;
+      const mic = track
+        ? { granted: true, captured: true, trackState: track.readyState, enabled: track.enabled, muted: track.muted, label: track.label }
+        : { granted: false, captured: false, trackState: 'none', enabled: false, muted: true, label: '' };
+
+      const peerDiag = await Promise.all(pcs.map(async ([pid, pc]) => {
+        const el = audioElsRef.current.get(pid);
+        const entry = analysersRef.current.get(pid);
+        const meta = peerInfoRef.current.get(pid) || {};
+        let bytesReceived = null;
+        try {
+          const stats = await pc.getStats();
+          stats.forEach((r) => {
+            if (r.type === 'inbound-rtp' && r.kind === 'audio') bytesReceived = r.bytesReceived;
+          });
+        } catch (e) { /* noop */ }
+        return {
+          peerId: pid,
+          distance: typeof meta.distance === 'number' ? meta.distance : null,
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          signalingState: pc.signalingState,
+          remoteTrack: !!el && !!el.srcObject,
+          playing: !!el && !el.paused && !el.ended && el.readyState > 2,
+          volume: el ? Number(el.volume.toFixed(2)) : null,
+          remoteLevel: entry ? Number(readLevel(entry).toFixed(3)) : 0,
+          bytesReceived
+        };
+      }));
+
+      if (!cancelled) {
+        setDiagnostics({
+          mic,
+          audioContext: audioCtxRef.current ? audioCtxRef.current.state : 'none',
+          peers: peerDiag
+        });
+      }
+    };
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => { cancelled = true; clearInterval(id); };
   }, []);
 
-  return { connections, selfLevel, selfLevelRef, levelsRef, playTestTone, audioReady, resumeAudio, pcDebug };
+  // Test/automation hook: expose the true state on window.
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    window.__proxispeakRtc = {
+      snapshot: () => ({
+        selfId,
+        audioContext: audioCtxRef.current ? audioCtxRef.current.state : 'none',
+        signals: { ...signalRef.current },
+        peers: Array.from(pcsRef.current.entries()).map(([peerId, pc]) => ({
+          peerId,
+          connectionState: pc.connectionState,
+          iceConnectionState: pc.iceConnectionState,
+          signalingState: pc.signalingState,
+          hasRemoteStream: !!(audioElsRef.current.get(peerId) && audioElsRef.current.get(peerId).srcObject)
+        }))
+      })
+    };
+    return () => { delete window.__proxispeakRtc; };
+  }, [selfId]);
+
+  return {
+    connections,
+    selfLevel,
+    selfLevelRef,
+    levelsRef,
+    playTestTone,
+    audioReady,
+    resumeAudio,
+    pcDebug,
+    playbackBlocked,
+    diagnostics
+  };
 }
