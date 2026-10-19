@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 
 const DEFAULT_BOUNDS = { width: 1200, height: 720, padding: 48 };
-const DEFAULT_EARSHOT = 150;
+const DEFAULT_EARSHOT = 100;
 
 // Normalize the many shapes `user.location` can take (Mongo array, fallback
 // object, persisted JSON string) into a plain {x, y} pair.
