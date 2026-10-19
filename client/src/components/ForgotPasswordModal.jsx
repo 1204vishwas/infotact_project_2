@@ -65,7 +65,7 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
                 <button
                   type="button"
                   onClick={handleReset}
-                  className="w-1/2 py-2.5 px-4 bg-slate-800 hover:bg-slate-750 text-slate-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                  className="w-1/2 py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
                 >
                   Cancel
                 </button>

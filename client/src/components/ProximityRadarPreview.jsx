@@ -3,10 +3,11 @@ import { Volume2, VolumeX, Radio, Navigation, Compass, Sparkles, Activity } from
 
 export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', previewName = 'Your Avatar' }) {
   const canvasRef = useRef(null);
+  const coordRef = useRef(null); // live coordinate readout — updated via DOM, not React state
   const [distance, setDistance] = useState(85);
   const [audioGain, setAudioGain] = useState(78);
   const [isWithinEarshot, setIsWithinEarshot] = useState(true);
-  const [userCoord, setUserCoord] = useState({ x: 190, y: 150 });
+  const [userCoord] = useState({ x: 190, y: 150 });
   const [peerCoord] = useState({ x: 260, y: 180 });
 
   const EARSHOT_RADIUS = 110; // Pixel threshold from specs
@@ -18,8 +19,9 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
     let animationFrameId;
 
     let time = 0;
+    let lastUiSync = 0;
 
-    const render = () => {
+    const render = (now) => {
       time += 0.03;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
@@ -48,10 +50,8 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       const dx = peerCoord.x - currentX;
       const dy = peerCoord.y - currentY;
       const currentDist = Math.round(Math.sqrt(dx * dx + dy * dy));
-      setDistance(currentDist);
 
       const inEarshot = currentDist <= EARSHOT_RADIUS;
-      setIsWithinEarshot(inEarshot);
 
       // Calculate dynamic Web Audio API gain attenuation
       let calculatedGain = 0;
@@ -59,7 +59,21 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
         calculatedGain = Math.round((1 - currentDist / EARSHOT_RADIUS) * 100);
         calculatedGain = Math.max(15, Math.min(100, calculatedGain));
       }
-      setAudioGain(calculatedGain);
+
+      // Keep the coordinate readout in sync with the floating avatar every
+      // frame — writing straight to the DOM avoids a React re-render per frame.
+      if (coordRef.current) {
+        coordRef.current.textContent = `Coordinates: [${Math.round(currentX)}, ${Math.round(currentY)}]`;
+      }
+
+      // Throttle React state updates to ~8Hz. Doing this at 60fps forced a full
+      // re-render of the preview every animation frame for no visible benefit.
+      if (now - lastUiSync >= 120) {
+        lastUiSync = now;
+        setDistance(currentDist);
+        setIsWithinEarshot(inEarshot);
+        setAudioGain(calculatedGain);
+      }
 
       // 2. Draw Earshot Radius Circle for User Avatar
       const pulseSize = 4 * Math.sin(time * 2);
@@ -127,7 +141,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       animationFrameId = requestAnimationFrame(render);
     };
 
-    render();
+    render(performance.now());
 
     return () => {
       cancelAnimationFrame(animationFrameId);
@@ -165,7 +179,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
         {/* Live coordinate overlay */}
         <div className="absolute top-2 left-2 text-[10px] font-mono text-slate-400 bg-slate-900/90 px-2 py-1 rounded border border-slate-800 flex items-center space-x-1.5 backdrop-blur-sm">
           <Navigation className="w-3 h-3 text-indigo-400" />
-          <span>Coordinates: [{Math.round(userCoord.x)}, {Math.round(userCoord.y)}]</span>
+          <span ref={coordRef}>Coordinates: [{Math.round(userCoord.x)}, {Math.round(userCoord.y)}]</span>
         </div>
 
         {/* Live Audio Gain Indicator */}

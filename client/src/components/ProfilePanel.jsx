@@ -73,7 +73,7 @@ export default function ProfilePanel({ user, onLogout }) {
                 <Navigation className="w-4 h-4 text-cyan-400" />
                 Office Coordinates
               </span>
-              <span className="text-[10px] text-slate-500 font-mono">2dsphere</span>
+              <span className="text-[10px] text-slate-500 font-mono">2d index</span>
             </div>
             <div className="text-lg font-mono font-bold text-white">
               X: {coords[0]}, Y: {coords[1]}

@@ -695,12 +695,16 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
           .sort((a, b) => a.distance - b.distance);
 
         setNearby(ranked);
+        // Note: these must be re-derived fresh each tick — using the previous
+        // `h.inEarshot`/`h.gain` as a fallback made the HUD sticky, so it kept
+        // reporting "colleagues in earshot" long after everyone left.
+        const nearestInEarshot = ranked.length && ranked[0].inEarshot ? ranked[0] : null;
         setHud((h) => ({
           x: Math.round(self.x),
           y: Math.round(self.y),
           speed: Math.round(speed),
-          gain: ranked.length && ranked[0].inEarshot ? ranked[0].gain : h.gain,
-          inEarshot: ranked.some((p) => p.inEarshot) || h.inEarshot
+          gain: nearestInEarshot ? nearestInEarshot.gain : 0,
+          inEarshot: Boolean(nearestInEarshot)
         }));
       }
 

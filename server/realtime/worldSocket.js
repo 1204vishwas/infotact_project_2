@@ -98,12 +98,6 @@ function initWorldSocket(io) {
         players: listPlayers()
       });
 
-      // Notify all clients about proximity groups (users within earshot)
-      io.emit('world:proximity-update', {
-        timestamp: Date.now(),
-        players: listPlayers()
-      });
-
       // Tell everyone else a new colleague walked in.
       socket.broadcast.emit('world:player-joined', toPublicPlayer(player));
       io.emit('world:presence', { count: players.size });

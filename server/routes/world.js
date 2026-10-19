@@ -77,15 +77,20 @@ router.get('/online', (req, res) => {
 router.get('/nearby', async (req, res) => {
   const { x, y, radius = 100 } = req.query;
 
-  if (x == null || y == null) {
+  // Reject missing AND non-numeric coordinates — `?x=abc` used to become
+  // NaN and silently match nothing instead of reporting the bad input.
+  const pointNum = Number(x);
+  const pointNumY = Number(y);
+  if (x == null || y == null || !Number.isFinite(pointNum) || !Number.isFinite(pointNumY)) {
     return res.status(400).json({
       success: false,
       message: 'x and y coordinates are required'
     });
   }
 
-  const point = [Number(x), Number(y)];
-  const maxDist = Number(radius) || 100;
+  const point = [pointNum, pointNumY];
+  const parsedRadius = Number(radius);
+  const maxDist = Number.isFinite(parsedRadius) && parsedRadius > 0 ? parsedRadius : 100;
   const startedAt = process.hrtime.bigint();
 
   let nearbyUsers = [];

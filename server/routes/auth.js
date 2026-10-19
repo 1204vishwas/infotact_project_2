@@ -2,11 +2,28 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const mongoose = require('mongoose');
 const User = require('../models/User');
 const { authenticateToken, JWT_SECRET } = require('../middleware/auth');
 
 // In-memory fallback cache in case MongoDB is temporarily starting up or unavailable
 const inMemoryUsers = new Map();
+
+// Mongoose buffers queries for ~10s while disconnected, which stalls requests
+// before the fallback can run. Only hit Mongo when the connection is actually up.
+const mongoReady = () => mongoose.connection.readyState === 1;
+
+// Always consult the in-memory store as well: a user may have been registered
+// while the database was unreachable, so a successful (but empty) Mongo query
+// must not lock them out.
+function findInMemoryUser({ email, username, id }) {
+  for (const u of inMemoryUsers.values()) {
+    if (id != null && u._id === id) return u;
+    if (email != null && u.email === email) return u;
+    if (username != null && u.username === username) return u;
+  }
+  return null;
+}
 
 // Helper to seed initial demo users if needed
 const initDemoAccounts = async () => {
@@ -47,6 +64,19 @@ const initDemoAccounts = async () => {
   ];
 
   for (const demo of demos) {
+    // Seed the in-memory store first so demo logins work immediately, even
+    // while MongoDB is still connecting (or permanently unavailable).
+    if (!inMemoryUsers.has(demo.email)) {
+      const hashedPassword = await bcrypt.hash(demo.password, 10);
+      inMemoryUsers.set(demo.email, {
+        _id: 'demo_' + demo.username,
+        ...demo,
+        password: hashedPassword,
+        createdAt: new Date()
+      });
+    }
+
+    if (!mongoReady()) continue;
     try {
       const exists = await User.findOne({ $or: [{ email: demo.email }, { username: demo.username }] });
       if (!exists) {
@@ -58,22 +88,17 @@ const initDemoAccounts = async () => {
         });
       }
     } catch (e) {
-      // In-memory store fallback
-      if (!inMemoryUsers.has(demo.email)) {
-        const hashedPassword = await bcrypt.hash(demo.password, 10);
-        inMemoryUsers.set(demo.email, {
-          _id: 'demo_' + demo.username,
-          ...demo,
-          password: hashedPassword,
-          createdAt: new Date()
-        });
-      }
+      // Non-fatal: the in-memory copy above keeps demo logins working.
     }
   }
 };
 
-// Initial trigger for demo accounts
+// Initial trigger for demo accounts, plus a re-run once MongoDB finishes
+// connecting so the demo users are persisted whenever the DB comes up late.
 setTimeout(initDemoAccounts, 1500);
+mongoose.connection.once('connected', () => {
+  initDemoAccounts().catch(() => {});
+});
 
 // ==========================================
 // 1. POST /api/auth/register
@@ -100,22 +125,21 @@ router.post('/register', async (req, res) => {
     const normalizedEmail = email.toLowerCase().trim();
     const normalizedUsername = username.toLowerCase().trim();
 
-    // Check if user already exists in MongoDB
+    // Check if user already exists in MongoDB (skip while the driver would
+    // only buffer), then fall back to the in-memory store for users created
+    // while the database was unreachable.
     let existingUser = null;
-    let usingMongo = true;
-    try {
-      existingUser = await User.findOne({
-        $or: [{ email: normalizedEmail }, { username: normalizedUsername }]
-      });
-    } catch (dbErr) {
-      usingMongo = false;
-      // Fallback search in memory
-      for (const u of inMemoryUsers.values()) {
-        if (u.email === normalizedEmail || u.username === normalizedUsername) {
-          existingUser = u;
-          break;
-        }
+    if (mongoReady()) {
+      try {
+        existingUser = await User.findOne({
+          $or: [{ email: normalizedEmail }, { username: normalizedUsername }]
+        });
+      } catch (dbErr) {
+        existingUser = null;
       }
+    }
+    if (!existingUser) {
+      existingUser = findInMemoryUser({ email: normalizedEmail, username: normalizedUsername });
     }
 
     if (existingUser) {
@@ -142,19 +166,27 @@ router.post('/register', async (req, res) => {
     ];
 
     let newUser;
+    let usingMongo = mongoReady();
     if (usingMongo) {
-      newUser = await User.create({
-        name: name.trim(),
-        email: normalizedEmail,
-        username: normalizedUsername,
-        password: hashedPassword,
-        role: role || 'Team Member',
-        avatarColor: avatarColor || '#3b82f6',
-        avatarIcon: avatarIcon || 'user',
-        department: department || 'Engineering',
-        location: initialCoordinates
-      });
-    } else {
+      try {
+        newUser = await User.create({
+          name: name.trim(),
+          email: normalizedEmail,
+          username: normalizedUsername,
+          password: hashedPassword,
+          role: role || 'Team Member',
+          avatarColor: avatarColor || '#3b82f6',
+          avatarIcon: avatarIcon || 'user',
+          department: department || 'Engineering',
+          location: initialCoordinates
+        });
+      } catch (dbErr) {
+        // e.g. the connection dropped mid-request — use the in-memory store.
+        usingMongo = false;
+        newUser = null;
+      }
+    }
+    if (!usingMongo) {
       newUser = {
         _id: 'user_' + Date.now(),
         name: name.trim(),
@@ -225,19 +257,21 @@ router.post('/login', async (req, res) => {
 
     const cleanIdentifier = identifier.toLowerCase().trim();
 
-    // Find user by email or username
+    // Find user by email or username. Only query Mongo when the connection is
+    // live (mongoose would otherwise buffer ~10s), and always fall back to the
+    // in-memory store so users registered while the DB was down can still log in.
     let user = null;
-    try {
-      user = await User.findOne({
-        $or: [{ email: cleanIdentifier }, { username: cleanIdentifier }]
-      });
-    } catch (dbErr) {
-      for (const u of inMemoryUsers.values()) {
-        if (u.email === cleanIdentifier || u.username === cleanIdentifier) {
-          user = u;
-          break;
-        }
+    if (mongoReady()) {
+      try {
+        user = await User.findOne({
+          $or: [{ email: cleanIdentifier }, { username: cleanIdentifier }]
+        });
+      } catch (dbErr) {
+        user = null;
       }
+    }
+    if (!user) {
+      user = findInMemoryUser({ email: cleanIdentifier, username: cleanIdentifier });
     }
 
     if (!user) {
@@ -300,15 +334,18 @@ router.post('/login', async (req, res) => {
 router.get('/me', authenticateToken, async (req, res) => {
   try {
     let user = null;
-    try {
-      user = await User.findById(req.user.id).select('-password');
-    } catch (e) {
-      for (const u of inMemoryUsers.values()) {
-        if (u._id === req.user.id) {
-          const { password, ...safeUser } = u;
-          user = safeUser;
-          break;
-        }
+    if (mongoReady()) {
+      try {
+        user = await User.findById(req.user.id).select('-password').lean();
+      } catch (e) {
+        user = null;
+      }
+    }
+    if (!user) {
+      const memUser = findInMemoryUser({ id: req.user.id });
+      if (memUser) {
+        const { password, ...safeUser } = memUser;
+        user = safeUser;
       }
     }
 
@@ -316,9 +353,14 @@ router.get('/me', authenticateToken, async (req, res) => {
       return res.status(404).json({ success: false, message: 'User profile not found.' });
     }
 
+    // Normalize to the same shape as login/register (`id`, not `_id`) so the
+    // client's session-resume path always receives a usable user object.
+    const plain = { ...user, id: user.id || user._id };
+    delete plain.password;
+
     return res.status(200).json({
       success: true,
-      user
+      user: plain
     });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Failed to fetch user session.' });
