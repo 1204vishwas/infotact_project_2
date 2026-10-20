@@ -159,25 +159,52 @@ function initWorldSocket(io) {
     // -------------------------------------------------------------------
     socket.on('world:offer', (payload = {}) => {
       const player = players.get(socket.id);
-      if (!player || !payload.offer) return;
+      if (!player) {
+        console.warn('[world:offer] dropped: sender socket has no registered player', socket.id);
+        return;
+      }
+      if (!payload.offer) {
+        console.warn('[world:offer] dropped: payload has no offer from', player.id);
+        return;
+      }
       const target = getPlayerByUserId(payload.target);
-      if (!target) return;
+      if (!target) {
+        console.warn(`[world:offer] dropped: target "${payload.target}" not found (from ${player.id})`);
+        return;
+      }
       io.to(target.socketId).emit('world:offer', { from: player.id, offer: payload.offer });
     });
 
     socket.on('world:answer', (payload = {}) => {
       const player = players.get(socket.id);
-      if (!player || !payload.answer) return;
+      if (!player) {
+        console.warn('[world:answer] dropped: sender socket has no registered player', socket.id);
+        return;
+      }
+      if (!payload.answer) {
+        console.warn('[world:answer] dropped: payload has no answer from', player.id);
+        return;
+      }
       const target = getPlayerByUserId(payload.target);
-      if (!target) return;
+      if (!target) {
+        console.warn(`[world:answer] dropped: target "${payload.target}" not found (from ${player.id})`);
+        return;
+      }
       io.to(target.socketId).emit('world:answer', { from: player.id, answer: payload.answer });
     });
 
     socket.on('world:ice-candidate', (payload = {}) => {
       const player = players.get(socket.id);
-      if (!player || !payload.candidate) return;
+      if (!player) {
+        console.warn('[world:ice-candidate] dropped: sender socket has no registered player', socket.id);
+        return;
+      }
+      if (!payload.candidate) return;
       const target = getPlayerByUserId(payload.target);
-      if (!target) return;
+      if (!target) {
+        console.warn(`[world:ice-candidate] dropped: target "${payload.target}" not found (from ${player.id})`);
+        return;
+      }
       io.to(target.socketId).emit('world:ice-candidate', { from: player.id, candidate: payload.candidate });
     });
 
