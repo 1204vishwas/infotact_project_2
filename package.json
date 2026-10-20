@@ -1,7 +1,7 @@
 {
   "name": "proxispeak-project-2",
   "version": "1.0.0",
-  "description": "Project 2: ProxiSpeak - Geospatial Proximity Audio Ecosystem (Sign Up & Login Pages)",
+  "description": "Project 2: ProxiSpeak - Geospatial Proximity Audio Ecosystem (Sign Up & Login Pages).",
   "scripts": {
     "server": "npm --prefix server start",
     "client": "npm --prefix client dev",
