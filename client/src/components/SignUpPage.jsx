@@ -154,7 +154,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
             <Headphones className="w-3.5 h-3.5 text-cyan-400" />
             <span>Join ProxiSpeak Ecosystem</span>
           </div>
-          <h2 className="text-2xl font-extrabold text-white tracking-tight">
+          <h2 className="text-2xl font-extrabold text-white light:text-gray-900 tracking-tight">
             Create Your Spatial Avatar
           </h2>
           <p className="text-xs text-slate-400 mt-1.5">
@@ -187,7 +187,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                   onChange={(e) => handleChange('name', e.target.value)}
                   placeholder="e.g. Priya Sharma"
                   required
-                  className="w-full pl-9 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                  className="w-full pl-9 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
                 />
               </div>
             </div>
@@ -206,7 +206,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                   onChange={(e) => handleChange('username', e.target.value.toLowerCase().replace(/\s+/g, '_'))}
                   placeholder="priya_dev"
                   required
-                  className="w-full pl-9 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
+                  className="w-full pl-9 pr-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
                 />
               </div>
             </div>
@@ -227,7 +227,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                 onChange={(e) => handleChange('email', e.target.value)}
                 placeholder="name@infotact.in"
                 required
-                className="w-full pl-10 pr-3.5 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                className="w-full pl-10 pr-3.5 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
               />
             </div>
           </div>
@@ -245,7 +245,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                   handleChange('role', e.target.value);
                   if (selected) handleChange('department', selected.dept);
                 }}
-                className="w-full px-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
+                className="w-full px-3 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
               >
                 {roles.map((r, i) => (
                   <option key={i} value={r.title}>
@@ -315,7 +315,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                   onChange={(e) => handleChange('password', e.target.value)}
                   placeholder="Min 6 characters"
                   required
-                  className="w-full pl-9 pr-8 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
+                  className="w-full pl-9 pr-8 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
                 />
                 <button
                   type="button"
@@ -341,7 +341,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                   onChange={(e) => handleChange('confirmPassword', e.target.value)}
                   placeholder="Repeat password"
                   required
-                  className="w-full pl-9 pr-8 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
+                  className="w-full pl-9 pr-8 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all font-mono"
                 />
                 <button
                   type="button"
@@ -392,7 +392,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                 type="checkbox"
                 checked={formData.agreeTerms}
                 onChange={(e) => handleChange('agreeTerms', e.target.checked)}
-                className="w-4 h-4 mt-0.5 rounded border-slate-700 bg-slate-950 text-cyan-500 focus:ring-cyan-500"
+                className="w-4 h-4 mt-0.5 rounded border-slate-700 bg-slate-950 text-cyan-500 light:text-cyan-600 focus:ring-cyan-500"
               />
               <span className="text-xs text-slate-400 leading-snug">
                 I agree to the <span className="text-cyan-400">Infotact ProxiSpeak Workspace Policy</span> and audio proximity broadcasting guidelines.

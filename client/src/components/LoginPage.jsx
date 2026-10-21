@@ -108,7 +108,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
             <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
             <span>Virtual Office Gateway</span>
           </div>
-          <h2 className="text-2xl font-extrabold text-white tracking-tight">
+          <h2 className="text-2xl font-extrabold text-white light:text-gray-900 tracking-tight">
             Welcome to ProxiSpeak
           </h2>
           <p className="text-xs text-slate-400 mt-1.5">
@@ -137,7 +137,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
             <div className="flex items-center justify-between gap-2">
               <div className="flex items-center space-x-2.5 min-w-0">
                 <span
-                  className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-xs font-bold text-slate-950"
+                  className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-xs font-bold text-[#0f172a]"
                   style={{ backgroundColor: restoredSession.user.avatarColor || '#6366f1' }}
                 >
                   {(restoredSession.user.name || 'U').charAt(0).toUpperCase()}
@@ -180,13 +180,13 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
                 key={index}
                 type="button"
                 onClick={() => handleDemoFill(acc)}
-                className="flex flex-col items-center p-2 rounded-lg bg-slate-900 hover:bg-indigo-950/50 border border-slate-800 hover:border-indigo-500/40 transition-all text-center group"
+                className="flex flex-col items-center p-2 rounded-lg bg-slate-900 hover:bg-indigo-950/50 light:hover:bg-indigo-100 border border-slate-800 hover:border-indigo-500/40 transition-all text-center group"
               >
                 <span
                   className="w-3 h-3 rounded-full mb-1 group-hover:scale-110 transition-transform"
                   style={{ backgroundColor: acc.color }}
                 />
-                <span className="text-[10px] font-medium text-slate-300 group-hover:text-white truncate w-full">
+                <span className="text-[10px] font-medium text-slate-300 group-hover:text-white light:group-hover:text-gray-900 truncate w-full">
                   {acc.name.split(' ')[0]}
                 </span>
                 <span className="text-[9px] text-slate-500 truncate w-full">
@@ -222,7 +222,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
                 onChange={(e) => setIdentifier(e.target.value)}
                 placeholder="priya@infotact.in or priya_dev"
                 required
-                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
               />
             </div>
           </div>
@@ -251,7 +251,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••••••"
                 required
-                className="w-full pl-10 pr-10 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono"
+                className="w-full pl-10 pr-10 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all font-mono"
               />
               <button
                 type="button"
@@ -325,7 +325,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
               department: 'Infotact Solutions Bangalore'
             }, 'sso_demo_jwt_token');
           }}
-          className="w-full py-2.5 px-4 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-slate-300 hover:text-white rounded-xl text-xs font-semibold flex items-center justify-center space-x-2 transition-colors cursor-pointer"
+          className="w-full py-2.5 px-4 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 text-slate-300 hover:text-white light:hover:text-gray-900 rounded-xl text-xs font-semibold flex items-center justify-center space-x-2 transition-colors cursor-pointer"
         >
           <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping" />
           <span>Authenticate with Infotact Workspace SSO</span>

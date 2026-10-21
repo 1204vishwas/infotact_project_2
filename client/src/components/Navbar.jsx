@@ -1,9 +1,10 @@
 import React from 'react';
-import { LogOut, MonitorPlay, Radio, ShieldCheck, Wifi, WifiOff } from 'lucide-react';
+import { LogOut, MonitorPlay, Moon, Radio, ShieldCheck, Sun, Wifi, WifiOff } from 'lucide-react';
 
-export default function Navbar({ currentView, setCurrentView, user, backendStatus, socketStatus, onLogout }) {
+export default function Navbar({ currentView, setCurrentView, user, backendStatus, socketStatus, theme = 'dark', onToggleTheme, onLogout }) {
   const isAuthed = Boolean(user);
   const signalingLive = socketStatus === 'connected';
+  const isLight = theme === 'light';
 
   const navItem = (view, label) => (
     <button
@@ -34,7 +35,7 @@ export default function Navbar({ currentView, setCurrentView, user, backendStatu
           </div>
           <div className="min-w-0">
             <div className="flex items-center space-x-2">
-              <span className="font-extrabold text-lg tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 bg-clip-text text-transparent">
+              <span className="font-extrabold text-lg tracking-tight bg-gradient-to-r from-white via-slate-100 to-slate-400 light:from-gray-900 light:via-gray-700 light:to-indigo-600 bg-clip-text text-transparent">
                 ProxiSpeak
               </span>
               <span className="text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
@@ -87,6 +88,28 @@ export default function Navbar({ currentView, setCurrentView, user, backendStatu
               {backendStatus === 'connected' ? 'API Online' : 'Local Engine'}
             </span>
           </div>
+
+          {/* Light / dark theme switch */}
+          <button
+            type="button"
+            onClick={onToggleTheme}
+            aria-label={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+            title={isLight ? 'Switch to dark theme' : 'Switch to light theme'}
+            className="flex items-center justify-center w-8 h-8 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-indigo-500 hover:border-indigo-500/50 hover:bg-slate-800/70 transition-all cursor-pointer"
+          >
+            <span className="relative block h-4 w-4" aria-hidden="true">
+              <Sun
+                className={`absolute inset-0 h-4 w-4 transition-all duration-300 ease-out motion-reduce:transition-none ${
+                  isLight ? 'scale-50 -rotate-90 opacity-0' : 'scale-100 rotate-0 opacity-100'
+                }`}
+              />
+              <Moon
+                className={`absolute inset-0 h-4 w-4 transition-all duration-300 ease-out motion-reduce:transition-none ${
+                  isLight ? 'scale-100 rotate-0 opacity-100' : 'scale-50 rotate-90 opacity-0'
+                }`}
+              />
+            </span>
+          </button>
 
           <div className="flex bg-slate-900/90 p-1 rounded-lg border border-slate-800">
             {isAuthed ? (

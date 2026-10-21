@@ -78,6 +78,113 @@ const OFFLINE_BOTS = [
 
 const ZONE_ICONS = { volume: Volume2, radio: Radio, palette: Palette, coffee: Coffee };
 
+// ---------------------------------------------------------------------------
+// Theme palettes — every canvas fill/stroke/gradient color is read from here.
+// The 60fps draw loop reads paletteRef.current each frame, so a theme switch
+// applies live without restarting the render effect.
+// The `dark` values are byte-identical to the original hardcoded colors.
+// ---------------------------------------------------------------------------
+const PALETTES = {
+  dark: {
+    // Floor
+    floorTop: '#0b1120',
+    floorBottom: '#0f172a',
+    grid: 'rgba(30,41,59,0.9)',
+    // Zones (accent rgb comes from the ZONES data)
+    zoneFillAlpha: 0.05,
+    zoneStrokeAlpha: 0.35,
+    // Furniture
+    furnitureGlowAlpha: 0.22,
+    furnitureGlowEnd: 0,
+    furnitureBody: 'rgba(30,41,59,0.85)',
+    tableStrokeAlpha: 0.45,
+    furnitureCoreAlpha: 0.18,
+    waterFillAlpha: 0.2,
+    waterStrokeAlpha: 0.7,
+    waterCoreAlpha: 0.9,
+    rackFill: 'rgba(15,23,42,0.95)',
+    rackStrokeAlpha: 0.6,
+    boardFill: 'rgba(30,41,59,0.7)',
+    boardStrokeAlpha: 0.5,
+    boardLineAlpha: 0.25,
+    sofaFill: 'rgba(51,65,85,0.9)',
+    sofaStrokeAlpha: 0.5,
+    sofaArmAlpha: 0.5,
+    deskStroke: 'rgba(71,85,105,0.7)',
+    wallStroke: 'rgba(148,163,184,0.35)',
+    // Avatars
+    speakingAccent: '16,185,129',
+    meetingHalo: 'rgba(244,63,94,0.18)',
+    avatarGlowAlpha: 0.5,
+    avatarGlowEnd: 0,
+    avatarRingSelf: '#f8fafc',
+    avatarRingPeer: 'rgba(248,250,252,0.75)',
+    avatarInitial: '#0b1120',
+    facingDot: '#e2e8f0',
+    namePlateBg: 'rgba(2,6,23,0.78)',
+    namePlateTextSelf: '#f8fafc',
+    namePlateTextPeer: '#cbd5e1',
+    namePlateStroke: 'rgba(15,23,42,0)', // no edge on the dark floor — dark theme stays pixel-identical
+    roleTagAlpha: 0.95,
+    avatarFallback: '#6366f1',
+    // Connections + earshot
+    connectionAccent: '16,185,129',
+    pulseAccent: '56,189,248',
+    earshotStroke: 'rgba(99,102,241,0.45)',
+    earshotFill: 'rgba(99,102,241,0.06)',
+    earshotWidth: 1.5
+  },
+  light: {
+    // Floor — bright blueprint white
+    floorTop: '#ffffff',
+    floorBottom: '#f1f5f9',
+    grid: 'rgba(203,213,225,0.8)',
+    // Zones — tint/border nudged up so they stay visible on white
+    zoneFillAlpha: 0.06,
+    zoneStrokeAlpha: 0.45,
+    // Furniture — white/near-white cards with colored accent borders
+    furnitureGlowAlpha: 0.11,
+    furnitureGlowEnd: 0,
+    furnitureBody: 'rgba(255,255,255,0.9)',
+    tableStrokeAlpha: 0.45,
+    furnitureCoreAlpha: 0.18,
+    waterFillAlpha: 0.2,
+    waterStrokeAlpha: 0.7,
+    waterCoreAlpha: 0.9,
+    rackFill: 'rgba(241,245,249,0.95)',
+    rackStrokeAlpha: 0.6,
+    boardFill: 'rgba(255,255,255,0.95)',
+    boardStrokeAlpha: 0.5,
+    boardLineAlpha: 0.25,
+    sofaFill: 'rgba(241,245,249,0.95)',
+    sofaStrokeAlpha: 0.5,
+    sofaArmAlpha: 0.5,
+    deskStroke: 'rgba(148,163,184,0.9)',
+    wallStroke: 'rgba(100,116,139,0.5)',
+    // Avatars — dark ring/labels so they read on the white floor
+    speakingAccent: '16,185,129',
+    meetingHalo: 'rgba(244,63,94,0.18)',
+    avatarGlowAlpha: 0.25,
+    avatarGlowEnd: 0,
+    avatarRingSelf: '#0f172a',
+    avatarRingPeer: 'rgba(15,23,42,0.6)',
+    avatarInitial: '#0b1120',
+    facingDot: '#0f172a',
+    namePlateBg: 'rgba(255,255,255,0.92)',
+    namePlateTextSelf: '#0f172a',
+    namePlateTextPeer: '#334155',
+    namePlateStroke: 'rgba(15,23,42,0.14)', // crisp edge — a white pill vanishes on the white floor
+    roleTagAlpha: 0.95,
+    avatarFallback: '#6366f1',
+    // Connections + earshot
+    connectionAccent: '16,185,129',
+    pulseAccent: '56,189,248',
+    earshotStroke: 'rgba(99,102,241,0.55)',
+    earshotFill: 'rgba(99,102,241,0.08)',
+    earshotWidth: 2.5 // thinned-out indigo reads weaker on white, so compensate
+  }
+};
+
 const clamp = (v, min, max) => Math.min(Math.max(v, min), max);
 const lerp = (a, b, t) => a + (b - a) * t;
 const hexToRgba = (hex, alpha) => {
@@ -112,8 +219,13 @@ const roleAbbrev = (role) => {
   return map[role] || 'TEAM';
 };
 
-export default function WorldCanvas({ user, token, showToast, onStatusChange }) {
+export default function WorldCanvas({ user, token, showToast, onStatusChange, theme = 'dark' }) {
   const canvasRef = useRef(null);
+  // Palette is re-resolved when `theme` changes but read through a ref inside
+  // the 60fps draw loop, so switches apply live without restarting the effect.
+  const palette = useMemo(() => PALETTES[theme] || PALETTES.dark, [theme]);
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
   const { peersRef, status, peers, selfId, socketRef, onlineCount, proximityGroups, sendMove, setMuted } = useWorldSocket({ user, token });
 
   const [muted, setMutedState] = useState(false);
@@ -316,15 +428,16 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
     };
 
     const drawFloor = () => {
-      // Dark navy office floor (original design background).
+      const C = paletteRef.current;
+      // Office floor — dark navy (dark theme) or bright blueprint white (light theme).
       const bg = ctx.createLinearGradient(0, 0, OFFICE.width, OFFICE.height);
-      bg.addColorStop(0, '#0b1120');
-      bg.addColorStop(1, '#0f172a');
+      bg.addColorStop(0, C.floorTop);
+      bg.addColorStop(1, C.floorBottom);
       ctx.fillStyle = bg;
       ctx.fillRect(0, 0, OFFICE.width, OFFICE.height);
 
       // Subtle square grid.
-      ctx.strokeStyle = 'rgba(30,41,59,0.9)';
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       for (let x = 0; x <= OFFICE.width; x += GRID_SIZE) {
         ctx.beginPath();
@@ -341,9 +454,10 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
     };
 
     const drawZones = () => {
+      const C = paletteRef.current;
       ZONES.forEach((z) => {
-        ctx.fillStyle = `rgba(${z.rgb},0.05)`;
-        ctx.strokeStyle = `rgba(${z.rgb},0.35)`;
+        ctx.fillStyle = `rgba(${z.rgb},${C.zoneFillAlpha})`;
+        ctx.strokeStyle = `rgba(${z.rgb},${C.zoneStrokeAlpha})`;
         ctx.lineWidth = 1.5;
         ctx.setLineDash([7, 7]);
         drawRoundRect(z.x, z.y, z.w, z.h, 16);
@@ -354,11 +468,12 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
     };
 
     const drawFurniture = () => {
+      const C = paletteRef.current;
       FURNITURE.forEach((d) => {
         if (d.shape === 'circle') {
           const glow = ctx.createRadialGradient(d.x, d.y, 2, d.x, d.y, d.r);
-          glow.addColorStop(0, `rgba(${d.rgb},0.22)`);
-          glow.addColorStop(1, `rgba(${d.rgb},0)`);
+          glow.addColorStop(0, `rgba(${d.rgb},${C.furnitureGlowAlpha})`);
+          glow.addColorStop(1, `rgba(${d.rgb},${C.furnitureGlowEnd})`);
           ctx.beginPath();
           ctx.arc(d.x, d.y, d.r + 10, 0, Math.PI * 2);
           ctx.fillStyle = glow;
@@ -366,15 +481,15 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
 
           ctx.beginPath();
           ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-          ctx.fillStyle = 'rgba(30,41,59,0.85)';
+          ctx.fillStyle = C.furnitureBody;
           ctx.fill();
-          ctx.strokeStyle = `rgba(${d.rgb},0.45)`;
+          ctx.strokeStyle = `rgba(${d.rgb},${C.tableStrokeAlpha})`;
           ctx.lineWidth = 1.5;
           ctx.stroke();
 
           ctx.beginPath();
           ctx.arc(d.x, d.y, d.r * 0.35, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${d.rgb},0.18)`;
+          ctx.fillStyle = `rgba(${d.rgb},${C.furnitureCoreAlpha})`;
           ctx.fill();
           return;
         }
@@ -382,21 +497,21 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         if (d.shape === 'water') {
           ctx.beginPath();
           ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${d.rgb},0.2)`;
+          ctx.fillStyle = `rgba(${d.rgb},${C.waterFillAlpha})`;
           ctx.fill();
-          ctx.strokeStyle = `rgba(${d.rgb},0.7)`;
+          ctx.strokeStyle = `rgba(${d.rgb},${C.waterStrokeAlpha})`;
           ctx.lineWidth = 1.5;
           ctx.stroke();
           ctx.beginPath();
           ctx.arc(d.x, d.y, Math.max(3, d.r * 0.3), 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${d.rgb},0.9)`;
+          ctx.fillStyle = `rgba(${d.rgb},${C.waterCoreAlpha})`;
           ctx.fill();
           return;
         }
 
         if (d.shape === 'rack') {
-          ctx.fillStyle = 'rgba(15,23,42,0.95)';
-          ctx.strokeStyle = `rgba(${d.rgb},0.6)`;
+          ctx.fillStyle = C.rackFill;
+          ctx.strokeStyle = `rgba(${d.rgb},${C.rackStrokeAlpha})`;
           ctx.lineWidth = 1.5;
           drawRoundRect(d.x, d.y, d.w, d.h, 6);
           ctx.fill();
@@ -409,13 +524,13 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         }
 
         if (d.shape === 'board') {
-          ctx.fillStyle = 'rgba(30,41,59,0.7)';
-          ctx.strokeStyle = `rgba(${d.rgb},0.5)`;
+          ctx.fillStyle = C.boardFill;
+          ctx.strokeStyle = `rgba(${d.rgb},${C.boardStrokeAlpha})`;
           ctx.lineWidth = 1.5;
           drawRoundRect(d.x, d.y, d.w, d.h, 8);
           ctx.fill();
           ctx.stroke();
-          ctx.strokeStyle = `rgba(${d.rgb},0.25)`;
+          ctx.strokeStyle = `rgba(${d.rgb},${C.boardLineAlpha})`;
           ctx.beginPath();
           ctx.moveTo(d.x + 14, d.y + d.h / 2);
           ctx.lineTo(d.x + d.w - 14, d.y + d.h / 2);
@@ -424,15 +539,15 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         }
 
         if (d.shape === 'sofa') {
-          ctx.fillStyle = 'rgba(51,65,85,0.9)';
-          ctx.strokeStyle = `rgba(${d.rgb},0.5)`;
+          ctx.fillStyle = C.sofaFill;
+          ctx.strokeStyle = `rgba(${d.rgb},${C.sofaStrokeAlpha})`;
           ctx.lineWidth = 1.5;
           drawRoundRect(d.x, d.y, d.w, d.h, 9);
           ctx.fill();
           ctx.stroke();
           ctx.beginPath();
           ctx.arc(d.x + 12, d.y + d.h / 2, 6, 0, Math.PI * 2);
-          ctx.fillStyle = `rgba(${d.rgb},0.5)`;
+          ctx.fillStyle = `rgba(${d.rgb},${C.sofaArmAlpha})`;
           ctx.fill();
           ctx.beginPath();
           ctx.arc(d.x + d.w - 12, d.y + d.h / 2, 6, 0, Math.PI * 2);
@@ -441,28 +556,29 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         }
 
         // Standard rectangular desk with a glowing monitor bar.
-        ctx.fillStyle = 'rgba(30,41,59,0.85)';
-        ctx.strokeStyle = 'rgba(71,85,105,0.7)';
+        ctx.fillStyle = C.furnitureBody;
+        ctx.strokeStyle = C.deskStroke;
         ctx.lineWidth = 1;
         drawRoundRect(d.x, d.y, d.w, d.h, 8);
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = `rgba(${d.rgb},0.18)`;
+        ctx.fillStyle = `rgba(${d.rgb},${C.furnitureCoreAlpha})`;
         drawRoundRect(d.x + 12, d.y + 10, d.w - 24, 6, 3);
         ctx.fill();
       });
 
       // Office perimeter walls.
-      ctx.strokeStyle = 'rgba(148,163,184,0.35)';
+      ctx.strokeStyle = C.wallStroke;
       ctx.lineWidth = 4;
       drawRoundRect(6, 6, OFFICE.width - 12, OFFICE.height - 12, 20);
       ctx.stroke();
     };
 
     const drawAvatar = (a, isSelf) => {
+      const C = paletteRef.current;
       const radius = isSelf ? 18 : 15;
-      const color = a.avatarColor || '#6366f1';
+      const color = a.avatarColor || C.avatarFallback;
 
       // Green pulsing ring while this participant's microphone is active.
       const level = isSelf ? selfLevelRef.current : levelsRef.current.get(a.id) || 0;
@@ -470,7 +586,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         const speakWave = Math.sin(simRef.current.clock * 6);
         ctx.beginPath();
         ctx.arc(a.x, a.y, radius + 6 + speakWave * 2, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(16,185,129,${0.55 + 0.35 * speakWave})`;
+        ctx.strokeStyle = `rgba(${C.speakingAccent},${0.55 + 0.35 * speakWave})`;
         ctx.lineWidth = 2.5;
         ctx.stroke();
       }
@@ -478,14 +594,14 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
       if (a.status === 'in-meeting') {
         ctx.beginPath();
         ctx.arc(a.x, a.y, radius + 4, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(244,63,94,0.18)';
+        ctx.fillStyle = C.meetingHalo;
         ctx.fill();
       }
 
       // Soft glow halo.
       const glow = ctx.createRadialGradient(a.x, a.y, 2, a.x, a.y, radius * 2.4);
-      glow.addColorStop(0, hexToRgba(color, 0.5));
-      glow.addColorStop(1, hexToRgba(color, 0));
+      glow.addColorStop(0, hexToRgba(color, C.avatarGlowAlpha));
+      glow.addColorStop(1, hexToRgba(color, C.avatarGlowEnd));
       ctx.beginPath();
       ctx.arc(a.x, a.y, radius * 2.4, 0, Math.PI * 2);
       ctx.fillStyle = glow;
@@ -497,11 +613,11 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
       ctx.fillStyle = color;
       ctx.fill();
       ctx.lineWidth = isSelf ? 3 : 2;
-      ctx.strokeStyle = isSelf ? '#f8fafc' : 'rgba(248,250,252,0.75)';
+      ctx.strokeStyle = isSelf ? C.avatarRingSelf : C.avatarRingPeer;
       ctx.stroke();
 
       // Initial.
-      ctx.fillStyle = '#0b1120';
+      ctx.fillStyle = C.avatarInitial;
       ctx.font = `bold ${isSelf ? 14 : 12}px "Plus Jakarta Sans", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -513,7 +629,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         const fy = a.y + Math.sin(a.facing) * (radius + 7);
         ctx.beginPath();
         ctx.arc(fx, fy, 3.5, 0, Math.PI * 2);
-        ctx.fillStyle = '#e2e8f0';
+        ctx.fillStyle = C.facingDot;
         ctx.fill();
       }
 
@@ -522,19 +638,23 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
       ctx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
       ctx.textBaseline = 'alphabetic';
       const textWidth = ctx.measureText(label).width;
-      ctx.fillStyle = 'rgba(2,6,23,0.78)';
+      ctx.fillStyle = C.namePlateBg;
       drawRoundRect(a.x - textWidth / 2 - 7, a.y + radius + 7, textWidth + 14, 18, 6);
       ctx.fill();
-      ctx.fillStyle = isSelf ? '#f8fafc' : '#cbd5e1';
+      ctx.strokeStyle = C.namePlateStroke;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.fillStyle = isSelf ? C.namePlateTextSelf : C.namePlateTextPeer;
       ctx.fillText(label, a.x, a.y + radius + 20);
 
       // Role tag.
       ctx.font = '9px "JetBrains Mono", monospace';
-      ctx.fillStyle = hexToRgba(color, 0.95);
+      ctx.fillStyle = hexToRgba(color, C.roleTagAlpha);
       ctx.fillText(roleAbbrev(a.role), a.x, a.y - radius - 8);
     };
 
     const drawConnections = (self, others) => {
+      const C = paletteRef.current;
       others.forEach((p) => {
         const dist = Math.hypot(p.x - self.x, p.y - self.y);
         if (dist > EARSHOT_RADIUS) return;
@@ -543,7 +663,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         ctx.beginPath();
         ctx.moveTo(self.x, self.y);
         ctx.lineTo(p.x, p.y);
-        ctx.strokeStyle = `rgba(16,185,129,${0.25 + (gain / 100) * 0.55})`;
+        ctx.strokeStyle = `rgba(${C.connectionAccent},${0.25 + (gain / 100) * 0.55})`;
         ctx.lineWidth = 2;
         ctx.setLineDash([5, 5]);
         ctx.stroke();
@@ -554,13 +674,14 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         const phase = (simRef.current.clock * 2) % 1;
         ctx.beginPath();
         ctx.arc(midX, midY, phase * 22, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(56,189,248,${0.7 * (1 - phase)})`;
+        ctx.strokeStyle = `rgba(${C.pulseAccent},${0.7 * (1 - phase)})`;
         ctx.lineWidth = 1.5;
         ctx.stroke();
       });
     };
 
     const render = (now) => {
+      const C = paletteRef.current;
       const dt = Math.min((now - last) / 1000, 0.05);
       last = now;
       simRef.current.clock += dt;
@@ -643,7 +764,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
         id: (user && user.id) || 'self',
         name: user && user.name ? user.name : 'You',
         role: user && user.role,
-        avatarColor: (user && user.avatarColor) || '#6366f1',
+        avatarColor: (user && user.avatarColor) || C.avatarFallback,
         status: mutedRef.current ? 'in-meeting' : 'online',
         x: sim.pos.x,
         y: sim.pos.y,
@@ -661,12 +782,12 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
       const pulse = 3 * Math.sin(sim.clock * 2.4);
       ctx.beginPath();
       ctx.arc(self.x, self.y, EARSHOT_RADIUS + pulse, 0, Math.PI * 2);
-      ctx.strokeStyle = 'rgba(99,102,241,0.45)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = C.earshotStroke;
+      ctx.lineWidth = C.earshotWidth;
       ctx.setLineDash([6, 6]);
       ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(99,102,241,0.06)';
+      ctx.fillStyle = C.earshotFill;
       ctx.fill();
 
       drawConnections(self, remote);
@@ -884,10 +1005,10 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
               onClick={resumeAudio}
               className={`flex items-center gap-1.5 px-2 py-1.5 rounded-lg border backdrop-blur-sm text-[8px] font-semibold ${
                 playbackBlocked
-                  ? 'bg-rose-500/90 border-rose-400 text-slate-900 animate-pulse'
+                  ? 'bg-rose-500/90 border-rose-400 text-[#0f172a] animate-pulse'
                   : audioReady
                   ? 'bg-slate-900/95 border-slate-800 text-emerald-400'
-                  : 'bg-amber-500/90 border-amber-400 text-slate-900 animate-pulse'
+                  : 'bg-amber-500/90 border-amber-400 text-[#0f172a] animate-pulse'
               }`}
               title={
                 playbackBlocked

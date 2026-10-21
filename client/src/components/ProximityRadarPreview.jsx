@@ -1,8 +1,52 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Volume2, VolumeX, Radio, Navigation, Compass, Sparkles, Activity } from 'lucide-react';
 
-export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', previewName = 'Your Avatar' }) {
+// ---------------------------------------------------------------------------
+// Theme palettes — every canvas color is read from here. The rAF loop reads
+// paletteRef.current each frame, so a theme switch applies live without
+// restarting the effect. The `dark` values are byte-identical to the
+// original hardcoded colors.
+// ---------------------------------------------------------------------------
+const PALETTES = {
+  dark: {
+    grid: '#1e293b',
+    earshotStrokeActive: 'rgba(99, 102, 241, 0.45)',
+    earshotStrokeIdle: 'rgba(100, 116, 139, 0.2)',
+    earshotFillActive: 'rgba(99, 102, 241, 0.08)',
+    earshotFillIdle: 'rgba(100, 116, 139, 0.03)',
+    connectionAccent: '16, 185, 129',
+    waveAccent: '56, 189, 248',
+    peerAvatar: '#10b981',
+    avatarRing: '#ffffff',
+    peerLabel: '#cbd5e1',
+    userLabel: '#f8fafc',
+    labelHalo: 'rgba(15,23,42,0)', // dark floor needs no halo — original look preserved
+    earshotWidth: 1.5
+  },
+  light: {
+    grid: 'rgba(203, 213, 225, 0.8)',
+    earshotStrokeActive: 'rgba(99, 102, 241, 0.55)',
+    earshotStrokeIdle: 'rgba(100, 116, 139, 0.35)',
+    earshotFillActive: 'rgba(99, 102, 241, 0.1)',
+    earshotFillIdle: 'rgba(100, 116, 139, 0.05)',
+    connectionAccent: '16, 185, 129',
+    waveAccent: '56, 189, 248',
+    peerAvatar: '#10b981',
+    avatarRing: '#0f172a',
+    peerLabel: '#334155',
+    userLabel: '#0f172a',
+    labelHalo: 'rgba(255,255,255,0.95)', // white glow so labels clear the grid lines
+    earshotWidth: 2
+  }
+};
+
+export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', previewName = 'Your Avatar', theme = 'dark' }) {
   const canvasRef = useRef(null);
+  // Resolved per render, read through a ref in the draw loop so theme changes
+  // apply live without restarting the animation effect.
+  const palette = useMemo(() => PALETTES[theme] || PALETTES.dark, [theme]);
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
   const coordRef = useRef(null); // live coordinate readout — updated via DOM, not React state
   const [distance, setDistance] = useState(85);
   const [audioGain, setAudioGain] = useState(78);
@@ -22,11 +66,12 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
     let lastUiSync = 0;
 
     const render = (now) => {
+      const C = paletteRef.current;
       time += 0.03;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // 1. Draw subtle office grid floor
-      ctx.strokeStyle = '#1e293b';
+      ctx.strokeStyle = C.grid;
       ctx.lineWidth = 1;
       const gridSize = 25;
       for (let x = 0; x < canvas.width; x += gridSize) {
@@ -79,14 +124,14 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       const pulseSize = 4 * Math.sin(time * 2);
       ctx.beginPath();
       ctx.arc(currentX, currentY, EARSHOT_RADIUS + pulseSize, 0, Math.PI * 2);
-      ctx.strokeStyle = inEarshot ? 'rgba(99, 102, 241, 0.45)' : 'rgba(100, 116, 139, 0.2)';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = inEarshot ? C.earshotStrokeActive : C.earshotStrokeIdle;
+      ctx.lineWidth = C.earshotWidth;
       ctx.setLineDash([5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
 
       // Fill earshot zone
-      ctx.fillStyle = inEarshot ? 'rgba(99, 102, 241, 0.08)' : 'rgba(100, 116, 139, 0.03)';
+      ctx.fillStyle = inEarshot ? C.earshotFillActive : C.earshotFillIdle;
       ctx.fill();
 
       // 3. Draw Audio Connection Line if in Earshot
@@ -94,7 +139,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
         ctx.beginPath();
         ctx.moveTo(currentX, currentY);
         ctx.lineTo(peerCoord.x, peerCoord.y);
-        ctx.strokeStyle = `rgba(16, 185, 129, ${calculatedGain / 100})`;
+        ctx.strokeStyle = `rgba(${C.connectionAccent}, ${calculatedGain / 100})`;
         ctx.lineWidth = 2;
         ctx.setLineDash([4, 4]);
         ctx.stroke();
@@ -105,38 +150,46 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
         const midY = (currentY + peerCoord.y) / 2;
         ctx.beginPath();
         ctx.arc(midX, midY, (time * 15) % 30, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(56, 189, 248, ${0.7 - ((time * 15) % 30) / 30})`;
+        ctx.strokeStyle = `rgba(${C.waveAccent}, ${0.7 - ((time * 15) % 30) / 30})`;
         ctx.stroke();
       }
 
       // 4. Draw Peer Avatar (Priya - Dev)
       ctx.beginPath();
       ctx.arc(peerCoord.x, peerCoord.y, 14, 0, Math.PI * 2);
-      ctx.fillStyle = '#10b981';
+      ctx.fillStyle = C.peerAvatar;
       ctx.fill();
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = C.avatarRing;
       ctx.lineWidth = 2;
       ctx.stroke();
 
-      // Peer label
-      ctx.fillStyle = '#cbd5e1';
+      // Peer label (halo is a no-op on the dark floor, lifts text off grid on light)
+      ctx.shadowColor = C.labelHalo;
+      ctx.shadowBlur = 3;
+      ctx.fillStyle = C.peerLabel;
       ctx.font = '10px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('Priya (Dev)', peerCoord.x, peerCoord.y + 26);
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
 
       // 5. Draw User Avatar
       ctx.beginPath();
       ctx.arc(currentX, currentY, 16, 0, Math.PI * 2);
       ctx.fillStyle = previewAvatarColor;
       ctx.fill();
-      ctx.strokeStyle = '#ffffff';
+      ctx.strokeStyle = C.avatarRing;
       ctx.lineWidth = 2.5;
       ctx.stroke();
 
       // User label
-      ctx.fillStyle = '#f8fafc';
+      ctx.shadowColor = C.labelHalo;
+      ctx.shadowBlur = 3;
+      ctx.fillStyle = C.userLabel;
       ctx.font = 'bold 11px "Plus Jakarta Sans", sans-serif';
       ctx.fillText(previewName.split(' ')[0] || 'You', currentX, currentY + 30);
+      ctx.shadowColor = 'transparent';
+      ctx.shadowBlur = 0;
 
       animationFrameId = requestAnimationFrame(render);
     };

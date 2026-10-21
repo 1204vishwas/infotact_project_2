@@ -26,7 +26,7 @@ export default function ProfilePanel({ user, onLogout }) {
 
             <div>
               <div className="flex items-center space-x-2">
-                <h2 className="text-xl font-extrabold text-white">{user?.name}</h2>
+                <h2 className="text-xl font-extrabold text-white light:text-gray-900">{user?.name}</h2>
                 <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
                   {user?.role || 'Team Member'}
                 </span>
@@ -75,7 +75,7 @@ export default function ProfilePanel({ user, onLogout }) {
               </span>
               <span className="text-[10px] text-slate-500 font-mono">2d index</span>
             </div>
-            <div className="text-lg font-mono font-bold text-white">
+            <div className="text-lg font-mono font-bold text-white light:text-gray-900">
               X: {coords[0]}, Y: {coords[1]}
             </div>
             <p className="text-[10px] text-slate-500 mt-2">
@@ -91,7 +91,7 @@ export default function ProfilePanel({ user, onLogout }) {
               </span>
               <span className="text-[10px] text-indigo-400 font-mono">100-150px</span>
             </div>
-            <div className="text-lg font-mono font-bold text-white">Dynamic Gain 100%</div>
+            <div className="text-lg font-mono font-bold text-white light:text-gray-900">Dynamic Gain 100%</div>
             <p className="text-[10px] text-slate-500 mt-2">
               Proximity crossfade within the office world
             </p>
@@ -106,7 +106,7 @@ export default function ProfilePanel({ user, onLogout }) {
               <span className="text-[10px] text-emerald-400 font-mono">Socket.io</span>
             </div>
             <div className="flex items-center justify-between">
-              <span className="text-sm font-semibold text-white">Audio Stream</span>
+              <span className="text-sm font-semibold text-white light:text-gray-900">Audio Stream</span>
               <button
                 type="button"
                 onClick={() => setMicActive(!micActive)}

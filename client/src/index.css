@@ -1,15 +1,68 @@
 @import "tailwindcss";
 
+/* `light:` utilities — enabled by <html data-theme="light"> */
+@custom-variant light (&:where([data-theme="light"], [data-theme="light"] *));
+
 :root {
   font-family: 'Plus Jakarta Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
   color-scheme: dark;
 }
 
+/* ---------------------------------------------------------------------------
+ * LIGHT THEME
+ * The UI is built from the Tailwind `slate` scale, so light mode remaps those
+ * tokens in one place: every `bg-slate-* / text-slate-* / border-slate-*`
+ * utility flips automatically. Accent palettes (indigo, cyan, violet, emerald,
+ * amber, rose) are untouched — they read well on both themes.
+ *
+ *   surfaces : 950 -> slate-50 page   900 -> white cards   800 -> slate-200 borders
+ *   text     : 100/200/300 -> dark   400 -> slate-500 muted   600 -> slate-400
+ * ------------------------------------------------------------------------ */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --color-slate-950: #f8fafc;
+  --color-slate-900: #ffffff;
+  --color-slate-800: #e2e8f0;
+  --color-slate-700: #cbd5e1;
+  --color-slate-600: #94a3b8;
+  --color-slate-400: #64748b;
+  --color-slate-300: #475569;
+  --color-slate-200: #334155;
+  --color-slate-100: #1e293b;
+
+  /* Accent text shades (300/400) are light-on-dark by design — on white they
+     would wash out, so they become the deep 700/800 tones instead. */
+  --color-indigo-300: #3730a3;   --color-indigo-400: #4338ca;
+  --color-cyan-300: #155e75;     --color-cyan-400: #0e7490;
+  --color-violet-300: #5b21b6;   --color-violet-400: #6d28d9;
+  --color-emerald-300: #065f46;  --color-emerald-400: #047857;
+  --color-amber-300: #92400e;    --color-amber-400: #b45309;
+  --color-rose-300: #9f1239;     --color-rose-400: #be123c;
+
+  /* Accent chip borders (700/800) become medium tints so they sit lightly
+     on the pale chip backgrounds below. */
+  --color-indigo-700: #818cf8;   --color-indigo-800: #818cf8;
+  --color-cyan-700: #22d3ee;     --color-cyan-800: #22d3ee;
+  --color-violet-700: #a78bfa;   --color-violet-800: #a78bfa;
+  --color-emerald-700: #34d399;  --color-emerald-800: #34d399;
+  --color-amber-700: #fbbf24;    --color-amber-800: #fbbf24;
+  --color-rose-700: #fb7185;     --color-rose-800: #fb7185;
+
+  /* Accent chip tints (900/950) are near-black washes — swap for pale tints. */
+  --color-indigo-950: #eef2ff;   --color-indigo-900: #e0e7ff;
+  --color-cyan-950: #ecfeff;     --color-cyan-900: #cffafe;
+  --color-violet-950: #f5f3ff;   --color-violet-900: #ede9fe;
+  --color-emerald-950: #ecfdf5;  --color-emerald-900: #d1fae5;
+  --color-amber-950: #fffbeb;    --color-amber-900: #fef3c7;
+  --color-rose-950: #fff1f2;     --color-rose-900: #ffe4e6;
+}
+
 body {
   margin: 0;
   padding: 0;
-  background-color: #090d16;
-  color: #f1f5f9;
+  background-color: var(--color-slate-950);
+  color: var(--color-slate-100);
   min-height: 100vh;
   overflow-x: hidden;
 }
@@ -69,6 +122,56 @@ body {
   animation: float-avatar 4s ease-in-out infinite;
 }
 
+/* Ambient aurora backdrop — one fixed layer behind every view */
+@keyframes aurora-drift {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+  33% {
+    transform: translate3d(3%, -2.5%, 0) scale(1.06);
+  }
+  66% {
+    transform: translate3d(-2.5%, 3%, 0) scale(1.03);
+  }
+}
+
+.aurora-backdrop {
+  background-image:
+    radial-gradient(42rem 42rem at 12% 6%, rgba(99, 102, 241, 0.22), transparent 65%),
+    radial-gradient(36rem 36rem at 90% 16%, rgba(34, 211, 238, 0.15), transparent 60%),
+    radial-gradient(48rem 48rem at 72% 94%, rgba(139, 92, 246, 0.18), transparent 62%);
+  animation: aurora-drift 26s ease-in-out infinite;
+}
+
+/* Faint dot grid that fades out toward the bottom */
+.aurora-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(148, 163, 184, 0.12) 1px, transparent 1px);
+  background-size: 36px 36px;
+  -webkit-mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 72%);
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.9), transparent 72%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aurora-backdrop {
+    animation: none;
+  }
+}
+
+/* Softer aurora on the light theme — the same glows, dialled down over white */
+:root[data-theme="light"] .aurora-backdrop {
+  background-image:
+    radial-gradient(42rem 42rem at 12% 6%, rgba(99, 102, 241, 0.16), transparent 65%),
+    radial-gradient(36rem 36rem at 90% 16%, rgba(34, 211, 238, 0.14), transparent 60%),
+    radial-gradient(48rem 48rem at 72% 94%, rgba(139, 92, 246, 0.15), transparent 62%);
+}
+
+:root[data-theme="light"] .aurora-backdrop::after {
+  background-image: radial-gradient(rgba(15, 23, 42, 0.1) 1px, transparent 1px);
+}
+
 /* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
@@ -83,4 +186,15 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
+}
+
+/* Light theme scrollbars */
+:root[data-theme="light"] ::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+}
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
 }

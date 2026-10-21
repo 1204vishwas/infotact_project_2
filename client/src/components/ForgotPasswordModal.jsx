@@ -31,7 +31,7 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
       <div className="relative w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl">
         <button
           onClick={handleReset}
-          className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
+          className="absolute top-4 right-4 text-slate-400 hover:text-white light:hover:text-gray-900 transition-colors"
         >
           <X className="w-5 h-5" />
         </button>
@@ -41,7 +41,7 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
             <div className="w-12 h-12 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mb-4">
               <Mail className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-white mb-1.5">Reset Spatial Password</h3>
+            <h3 className="text-xl font-bold text-white light:text-gray-900 mb-1.5">Reset Spatial Password</h3>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
               Enter the work email associated with your ProxiSpeak avatar account. We will send you a one-time credential reset link.
             </p>
@@ -57,7 +57,7 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
                   onChange={(e) => setEmail(e.target.value)}
                   placeholder="name@infotact.in"
                   required
-                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                  className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white light:text-gray-900 placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                 />
               </div>
 
@@ -91,9 +91,9 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
             <div className="w-12 h-12 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto mb-4">
               <CheckCircle2 className="w-6 h-6" />
             </div>
-            <h3 className="text-xl font-bold text-white mb-2">Check Your Inbox</h3>
+            <h3 className="text-xl font-bold text-white light:text-gray-900 mb-2">Check Your Inbox</h3>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-              We have dispatched spatial password reset instructions to <span className="text-white font-mono">{email}</span>.
+              We have dispatched spatial password reset instructions to <span className="text-white light:text-gray-900 font-mono">{email}</span>.
             </p>
             <button
               onClick={handleReset}

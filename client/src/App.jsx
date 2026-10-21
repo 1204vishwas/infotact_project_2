@@ -10,6 +10,13 @@ import { CheckCircle2, AlertCircle, Info, Sparkles } from 'lucide-react';
 
 export default function App() {
   const [currentView, setCurrentView] = useState('login'); // 'login' | 'signup' | 'office' | 'profile'
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem('proxispeak_theme') || 'light';
+    } catch (e) {
+      return 'light';
+    }
+  }); // 'light' | 'dark'
   const [currentUser, setCurrentUser] = useState(null);
   const [sessionToken, setSessionToken] = useState(null); // stable per-tab token captured at auth time
   const [savedSession, setSavedSession] = useState(null); // { user, token } detected but NOT auto-restored
@@ -36,6 +43,19 @@ export default function App() {
     };
     checkBackend();
   }, []);
+
+  // Apply the selected theme to <html>: this switches the remapped slate
+  // tokens in index.css and enables the `light:` utility variants.
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try {
+      localStorage.setItem('proxispeak_theme', theme);
+    } catch (e) {
+      /* storage unavailable — theme still applies for this session */
+    }
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((t) => (t === 'light' ? 'dark' : 'light'));
 
   // Detect a previously saved session WITHOUT auto-restoring it. Opening the
   // app always shows the login page; the stored identity is only resumed after
@@ -133,7 +153,10 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#090d16] text-slate-100 selection:bg-indigo-500 selection:text-white">
+    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-indigo-500 selection:text-white isolate">
+      {/* Ambient aurora backdrop behind every view */}
+      <div aria-hidden="true" className="aurora-backdrop pointer-events-none fixed inset-0 -z-10" />
+
       {/* Toast Notification */}
       {toast && (
         <div className="fixed bottom-5 right-5 z-50 flex items-center space-x-2.5 px-4 py-3 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl text-xs font-medium animate-bounce">
@@ -158,6 +181,8 @@ export default function App() {
         user={currentUser}
         backendStatus={backendStatus}
         socketStatus={socketStatus}
+        theme={theme}
+        onToggleTheme={toggleTheme}
         onLogout={handleLogout}
       />
 
@@ -169,6 +194,7 @@ export default function App() {
             token={sessionToken}
             showToast={showToast}
             onStatusChange={setSocketStatus}
+            theme={theme}
           />
         ) : currentView === 'profile' ? (
           <ProfilePanel user={currentUser} onLogout={handleLogout} />
@@ -204,7 +230,7 @@ export default function App() {
                     <Sparkles className="w-4 h-4 text-cyan-400 animate-spin" />
                     <span>Project 2 Architecture • Live Technology Preview</span>
                   </div>
-                  <h3 className="text-sm font-bold text-white">
+                  <h3 className="text-sm font-bold text-white light:text-gray-900">
                     "ProxiSpeak": Geospatial Proximity Audio Ecosystem
                   </h3>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
@@ -218,6 +244,7 @@ export default function App() {
                 <ProximityRadarPreview
                   previewAvatarColor={previewAvatarColor}
                   previewName={previewName}
+                  theme={theme}
                 />
               )}
             </div>
@@ -226,7 +253,7 @@ export default function App() {
       </main>
 
       {/* Footer conforming to Project 2 document metadata */}
-      <footer className="border-t border-slate-900 bg-slate-950/80 py-5 px-4 sm:px-6 lg:px-8 text-xs text-slate-500">
+      <footer className="border-t border-slate-900 light:border-gray-200 bg-slate-950/80 py-5 px-4 sm:px-6 lg:px-8 text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
           <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
             <span className="font-bold text-slate-400">INFOTACT SOLUTIONS</span>
