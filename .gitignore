@@ -1,6 +1,9 @@
 # Reference copy accidentally included by the source zip — never commit.
 infotact_project_2-vishwas/
 
+# macOS Finder metadata.
+.DS_Store
+
 # Dependency / build noise that must not be pushed.
 server/node_modules/
 client/node_modules/

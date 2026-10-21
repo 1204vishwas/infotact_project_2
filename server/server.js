@@ -56,6 +56,14 @@ const io = new Server(httpServer, {
 });
 initWorldSocket(io);
 
+httpServer.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`[ProxiSpeak] Port ${PORT} is already in use. Try: PORT=${Number(PORT) + 1} npm start`);
+    process.exit(1);
+  }
+  throw err;
+});
+
 httpServer.listen(PORT, () => {
   console.log(`[ProxiSpeak Auth Server] Running on http://localhost:${PORT}`);
   console.log(`[ProxiSpeak Realtime] Socket.io world broadcasting active on ws://localhost:${PORT}`);
