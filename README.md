@@ -7,9 +7,9 @@
 Traditional remote collaboration platforms (like Zoom and Microsoft Teams) isolate users into rigid, static "breakout rooms" where only one participant can speak at a time. They lack the spontaneous, organic spatial dynamics of an in-person office where individuals can overhear nearby conversations and naturally walk over to collaborate.
 
 **ProxiSpeak** solves this by introducing a **2D overhead virtual office** rendered via HTML5 Canvas and React. As users move their avatars closer to colleagues:
-- Audio dynamically crossfades and amplifies using the **Web Audio API** (3D stereo panning & volume attenuation).
+- Peer audio **attenuates with distance** — a colleague's playback volume scales down as they walk away from you.
 - A **Node.js & MongoDB Geospatial Engine** tracks real-time $X/Y$ coordinates using native `$near` & `$geoWithin` queries.
-- **WebRTC peer-to-peer audio connections** are established dynamically within a 100–150px "earshot" proximity radius.
+- **WebRTC peer-to-peer audio connections** are established dynamically within a 100px "earshot" proximity radius.
 
 ---
 
@@ -39,7 +39,7 @@ This repository implements the **Authentication & Spatial Identity Onboarding Mo
 - Built with HTML5 Canvas.
 - Displays an overhead virtual floor with grid lines.
 - Illustrates peer avatar distance calculations and the 110px earshot boundary.
-- Live Web Audio API gain attenuation feedback (e.g. 78% gain at 85px; 0% outside earshot).
+- Simulated gain feedback (e.g. 78% gain at 85px; 0% outside earshot) against a scripted peer — this preview is an illustration for the auth screens, not the live 100px radius used in the office canvas.
 - Real-time animated audio equalizer waves and dynamic coordinates display.
 
 ### 4. **Session Dashboard (`SessionDashboard.jsx`)**
@@ -68,7 +68,7 @@ This module turns the authenticated profile into a living 2D virtual office:
 - **Full 2D overhead office** rendered imperatively on an HTML5 `<canvas>` at 60fps — dark navy floor grid and the four original zones: Spatial Audio Lab, Core WebRTC Bay, Product & Design Hub, and Breakout Lounge & Water Cooler — each with a dashed accent border, icon heading, and furniture (desks, server rack, whiteboard, lounge seating), plus perimeter walls.
 - **Smooth keyboard movement:** `WASD` / arrow keys with frame-rate-independent acceleration, clamped max velocity, and friction — diagonal movement is normalized so it never feels faster.
 - **Mouse / pointer click-to-walk:** clicking anywhere on the floor steers the avatar with velocity easing toward the target; drag also re-targets.
-- **Earshot proximity system:** a pulsing `150px` earshot ring with live Web Audio-style gain attenuation, connection lines and radiating sound waves to peers inside earshot.
+- **Earshot proximity system:** a pulsing `100px` earshot ring with live Web Audio-style gain attenuation, connection lines and radiating sound waves to peers inside earshot.
 
 ### 7. **Real-Time Coordinate Broadcasting (`useWorldSocket.js` + Socket.io)**
 - **Socket.io world layer** (`server/realtime/worldSocket.js`) authenticates sockets with the login JWT and maintains a live in-memory roster of avatars.
@@ -76,6 +76,15 @@ This module turns the authenticated profile into a living 2D virtual office:
 - **`world:move`** — high-frequency (<100ms throttled) coordinate broadcasting; every move is relayed to all peers in the world.
 - **Geospatial persistence** — coordinates are throttled-upserted back into the MongoDB `2d` index, keeping the `$near` / `$geoWithin` engine live.
 - **Graceful degradation** — if the backend is offline, the canvas switches to a local simulation (demo colleagues wander the office) so movement and proximity behaviour remain fully testable.
+
+### 8. **Week 2 — Proximity Audio & WebRTC Peer-to-Peer Audio (`useWebRTC.js`)**
+- **100px hearing radius:** `EARSHOT = 100` (`client/src/hooks/useWebRTC.js`) is the single source of truth for the radius. `WorldCanvas.jsx` imports it as `EARSHOT_RADIUS`, so the drawn ring, the "in earshot" HUD and the real connection threshold can never disagree. Distance is Euclidean (`Math.hypot`) in canvas world units (1200×720). A peer connection is only opened for colleagues inside the radius, and the offline demo bots are explicitly excluded from negotiation.
+- **Real peer-to-peer audio:** a genuine `RTCPeerConnection` per nearby colleague, fed by `getUserMedia` microphone audio. The audio transceiver is created up front with direction `sendrecv`, so the local mic is attached later via `replaceTrack()` and no renegotiation is ever required. ICE is STUN-only (no TURN relay), so peers behind symmetric NAT may fail to connect.
+- **Deterministic initiator:** only the lexicographically smaller user id creates the SDP offer; the other side only answers. This removes offer glare, which previously left the polite peer with zero ICE candidates and a link that never connected.
+- **Signaling over Socket.io:** `world:offer`, `world:answer` and `world:ice-candidate` are relayed 1:1 by `server/realtime/worldSocket.js`. The server brokers the handshake only — it never touches the media.
+- **Distance-based attenuation:** each peer's remote stream plays through a hidden `<audio autoplay>` element whose `volume` is `0.4 + 0.6 × (1 − distance / 100)` — 100% at zero distance, 40% at the 100px edge. An existing link is kept for a 2.5s grace period, so a peer drifting just past the boundary does not churn the connection.
+- **Not implemented:** there is no spatial panning — no `StereoPannerNode` or `PannerNode` is used, so remote voices are centred. Web Audio is used only to analyse RMS level (driving the "speaking" ring and the mic meter) and to generate the 440 Hz test tone; it is not in the remote playback path.
+- **Honest diagnostics:** the canvas shows a live `RTC pcs=… tx(…) rx(…)` handshake readout, plus per-peer connection/ICE/signaling state, remote-track and playback flags, and real `bytesReceived` counters from `getStats()`. `window.__proxispeakRtc.snapshot()` exposes the same state to the browser console. There is no automated test suite yet — this behaviour is verified through these runtime diagnostics.
 
 ---
 
@@ -108,7 +117,8 @@ project_2/
         ├── index.css         # Tailwind styles & radar pulse keyframes
         ├── main.jsx          # React DOM root entry
         ├── hooks/
-        │   └── useWorldSocket.js   # Realtime coordinate-broadcasting hook
+        │   ├── useWorldSocket.js   # Realtime coordinate-broadcasting hook
+        │   └── useWebRTC.js        # 100px earshot gate + WebRTC P2P audio engine
         └── components/
             ├── Navbar.jsx               # Infotact branding & ISO 9001 badges
             ├── LoginPage.jsx            # Sign-in form with 1-click demo logins
@@ -116,6 +126,7 @@ project_2/
             ├── ProximityRadarPreview.jsx# 2D Canvas spatial audio proximity engine
             ├── SessionDashboard.jsx     # Post-login office dashboard hosting the world
             ├── WorldCanvas.jsx          # React Canvas office + keyboard/mouse movement
+            ├── ProfilePanel.jsx         # Identity, role & earshot status readout
             └── ForgotPasswordModal.jsx  # Password recovery dialog
 ```
 
