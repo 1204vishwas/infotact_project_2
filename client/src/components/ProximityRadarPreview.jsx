@@ -167,7 +167,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       ctx.shadowColor = C.labelHalo;
       ctx.shadowBlur = 3;
       ctx.fillStyle = C.peerLabel;
-      ctx.font = '10px "Plus Jakarta Sans", sans-serif';
+      ctx.font = '10px "Space Grotesk", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillText('Priya (Dev)', peerCoord.x, peerCoord.y + 26);
       ctx.shadowColor = 'transparent';
@@ -186,7 +186,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       ctx.shadowColor = C.labelHalo;
       ctx.shadowBlur = 3;
       ctx.fillStyle = C.userLabel;
-      ctx.font = 'bold 11px "Plus Jakarta Sans", sans-serif';
+      ctx.font = 'bold 11px "Space Grotesk", sans-serif';
       ctx.fillText(previewName.split(' ')[0] || 'You', currentX, currentY + 30);
       ctx.shadowColor = 'transparent';
       ctx.shadowBlur = 0;

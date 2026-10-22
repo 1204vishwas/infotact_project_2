@@ -618,7 +618,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange, th
 
       // Initial.
       ctx.fillStyle = C.avatarInitial;
-      ctx.font = `bold ${isSelf ? 14 : 12}px "Plus Jakarta Sans", sans-serif`;
+      ctx.font = `bold ${isSelf ? 14 : 12}px "Space Grotesk", sans-serif`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText((a.name || '?').charAt(0).toUpperCase(), a.x, a.y + 1);
@@ -635,7 +635,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange, th
 
       // Name plate.
       const label = isSelf ? `${a.name || 'You'} (you)` : a.name || 'Colleague';
-      ctx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
+      ctx.font = 'bold 12px "Space Grotesk", sans-serif';
       ctx.textBaseline = 'alphabetic';
       const textWidth = ctx.measureText(label).width;
       ctx.fillStyle = C.namePlateBg;
