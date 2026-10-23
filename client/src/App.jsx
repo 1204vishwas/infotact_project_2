@@ -268,7 +268,7 @@ export default function App() {
             </span>
             <span className="text-slate-600">|</span>
             <span className="text-[11px] text-slate-400">
-              ProxiSpeak v1.0
+              ProxiSpeak v1.0.1
             </span>
           </div>
         </div>
