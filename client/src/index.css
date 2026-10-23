@@ -145,7 +145,7 @@ body {
     radial-gradient(42rem 42rem at 12% 6%, rgba(99, 102, 241, 0.22), transparent 65%),
     radial-gradient(36rem 36rem at 90% 16%, rgba(34, 211, 238, 0.15), transparent 60%),
     radial-gradient(48rem 48rem at 72% 94%, rgba(139, 92, 246, 0.18), transparent 62%);
-  animation: aurora-drift 26s ease-in-out infinite;
+  animation: aurora-drift 18s ease-in-out infinite;
 }
 
 /* Faint dot grid that fades out toward the bottom */
