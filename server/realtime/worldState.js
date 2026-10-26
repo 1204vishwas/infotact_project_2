@@ -8,6 +8,10 @@ const OFFICE_BOUNDS = Object.freeze({
   padding: 48 // keeps avatars inside the visible office floor
 });
 
+// Authoritative proximity threshold for WebRTC signaling. Must match the
+// client's EARSHOT constant so the server enforces the same 100px earshot.
+const HEARING_RADIUS = 100;
+
 // socketId -> live player record
 const players = new Map();
 
@@ -55,6 +59,7 @@ function getPlayerByUserId(userId) {
 
 module.exports = {
   OFFICE_BOUNDS,
+  HEARING_RADIUS,
   players,
   clamp,
   sanitizePosition,

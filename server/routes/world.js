@@ -150,57 +150,112 @@ router.get('/nearby', async (req, res) => {
 
 // ==========================================
 // GET /api/world/benchmark
-// Spatial audit harness: runs the proximity clustering pipeline repeatedly
-// and reports latency statistics to prove sub-20ms geospatial filtering.
+// Spatial audit harness. Two measurements are reported separately:
+//   1. in-memory proximity clustering over the live roster
+//   2. actual MongoDB $near queries (one per iteration)
+// The MongoDB measurement is never replaced by the in-memory fallback.
 // ==========================================
 router.get('/benchmark', async (req, res) => {
   const iterations = Math.min(Math.max(Number(req.query.iterations) || 200, 1), 5000);
   const radius = Number(req.query.radius) || 100;
   const roster = listPlayers().map((p) => ({ ...p, location: [p.x, p.y] }));
 
-  const times = [];
+  // Measurement 1: in-memory union-find clustering (same data the realtime
+  // layer uses for proximity groups).
+  const clusteringTimes = [];
   for (let i = 0; i < iterations; i += 1) {
     const t0 = process.hrtime.bigint();
     clusterByProximity(roster, radius);
-    times.push(Number(process.hrtime.bigint() - t0) / 1e6);
+    clusteringTimes.push(Number(process.hrtime.bigint() - t0) / 1e6);
   }
 
-  let dbQueryMs = null;
-  let dbSource = 'memory';
-  if (mongoose.connection.readyState === 1 && roster.length > 0) {
-    try {
+  const clusterAvg = clusteringTimes.reduce((a, b) => a + b, 0) / clusteringTimes.length;
+  const clusterMax = Math.max(...clusteringTimes);
+
+  // Measurement 2: execute the real geospatial query `iterations` times.
+  // Anchor on the first live avatar when available, otherwise a stable point
+  // inside the office so the audit still exercises MongoDB.
+  const anchor = roster.length > 0
+    ? [roster[0].location[0], roster[0].location[1]]
+    : [300, 240];
+
+  const mongoNearQuery = {
+    source: 'unavailable',
+    iterations: 0,
+    anchor,
+    avgMs: null,
+    maxMs: null,
+    minMs: null,
+    ms: null,
+    under20ms: null,
+    error: null
+  };
+
+  if (mongoose.connection.readyState !== 1) {
+    mongoNearQuery.error = 'MongoDB not connected; no in-memory substitute used';
+    return res.status(503).json({
+      success: false,
+      iterations,
+      players: roster.length,
+      radius,
+      clustering: {
+        avgMs: Number(clusterAvg.toFixed(3)),
+        maxMs: Number(clusterMax.toFixed(3)),
+        under20ms: clusterMax < 20
+      },
+      mongoNearQuery
+    });
+  }
+
+  try {
+    const runNearQuery = () => User.find({
+      location: { $near: anchor, $maxDistance: radius }
+    })
+      .select('-password')
+      .limit(50)
+      .lean();
+
+    // Warm up the connection/index once; excluded from measured samples.
+    await runNearQuery();
+
+    const dbTimes = [];
+    for (let i = 0; i < iterations; i += 1) {
       const t0 = process.hrtime.bigint();
-      await User.find({
-        location: { $near: [roster[0].location[0], roster[0].location[1]], $maxDistance: radius }
-      })
-        .select('-password')
-        .limit(50)
-        .lean();
-      dbQueryMs = Number((Number(process.hrtime.bigint() - t0) / 1e6).toFixed(3));
-      dbSource = 'mongodb';
-    } catch (e) {
-      dbQueryMs = null;
+      await runNearQuery();
+      dbTimes.push(Number(process.hrtime.bigint() - t0) / 1e6);
     }
-  }
 
-  const avgMs = times.reduce((a, b) => a + b, 0) / times.length;
-  const maxMs = Math.max(...times);
+    const dbAvg = dbTimes.reduce((a, b) => a + b, 0) / dbTimes.length;
+    const dbMax = Math.max(...dbTimes);
+    const dbMin = Math.min(...dbTimes);
+
+    mongoNearQuery.source = 'mongodb';
+    mongoNearQuery.iterations = dbTimes.length;
+    mongoNearQuery.avgMs = Number(dbAvg.toFixed(3));
+    mongoNearQuery.maxMs = Number(dbMax.toFixed(3));
+    mongoNearQuery.minMs = Number(dbMin.toFixed(3));
+    mongoNearQuery.ms = Number(dbAvg.toFixed(3));
+    mongoNearQuery.under20ms = dbMax < 20;
+  } catch (e) {
+    mongoNearQuery.source = 'mongodb-error';
+    mongoNearQuery.error = 'MongoDB $near benchmark failed; no in-memory substitute used';
+  }
 
   return res.status(200).json({
-    success: true,
+    success: mongoNearQuery.source === 'mongodb',
     iterations,
     players: roster.length,
     radius,
-    clustering: {
-      avgMs: Number(avgMs.toFixed(3)),
-      maxMs: Number(maxMs.toFixed(3)),
-      under20ms: maxMs < 20
+    method: {
+      clustering: 'process.hrtime.bigint() around in-memory union-find clustering',
+      mongoNearQuery: 'process.hrtime.bigint() around each awaited User.find({ location: { $near, $maxDistance } }).lean(); one warm-up excluded'
     },
-    mongoNearQuery: {
-      source: dbSource,
-      ms: dbQueryMs,
-      under20ms: dbQueryMs != null ? dbQueryMs < 20 : null
-    }
+    clustering: {
+      avgMs: Number(clusterAvg.toFixed(3)),
+      maxMs: Number(clusterMax.toFixed(3)),
+      under20ms: clusterMax < 20
+    },
+    mongoNearQuery
   });
 });
 

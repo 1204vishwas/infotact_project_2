@@ -695,13 +695,14 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
           .sort((a, b) => a.distance - b.distance);
 
         setNearby(ranked);
-        setHud((h) => ({
+        const nearestInEarshot = ranked.find((p) => p.inEarshot);
+        setHud({
           x: Math.round(self.x),
           y: Math.round(self.y),
           speed: Math.round(speed),
-          gain: ranked.length && ranked[0].inEarshot ? ranked[0].gain : h.gain,
-          inEarshot: ranked.some((p) => p.inEarshot) || h.inEarshot
-        }));
+          gain: nearestInEarshot ? nearestInEarshot.gain : 0,
+          inEarshot: Boolean(nearestInEarshot)
+        });
       }
 
       raf = requestAnimationFrame(render);
@@ -722,10 +723,10 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
   const speakingSelf = !muted && selfLevel > SPEAKING_THRESHOLD;
 
   // Honest, real-state indicators (no optimistic flags):
-  //  - micReady      : we actually captured a live microphone track
+  //  - micCaptured   : we actually captured a live microphone track
   //  - liveLinks     : peer connections whose RTC state is truly "connected"
   //  - remoteAudible : a received remote track is playing AND carries energy
-  const micReady = diagnostics.mic.captured && diagnostics.mic.enabled;
+  const micCaptured = diagnostics.mic.captured;
   const liveLinks = diagnostics.peers.filter((p) => p.connectionState === 'connected').length;
   const connectingLinks = diagnostics.peers.filter((p) => p.connectionState !== 'connected').length;
   const remoteAudible = diagnostics.peers.some((p) => p.playing && p.remoteLevel > SPEAKING_THRESHOLD);
@@ -898,11 +899,11 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
             </button>
             <div
               className="flex items-center gap-1.5 bg-slate-900/95 px-2 py-1.5 rounded-lg border border-slate-800 backdrop-blur-sm"
-              title={`Your microphone input level${micReady ? '' : ' — microphone not captured'}`}
+              title={`Your microphone input level${micCaptured ? (muted ? ' — muted' : '') : ' — microphone not captured'}`}
             >
               <span
                 className={`w-1.5 h-1.5 rounded-full ${
-                  !micReady ? 'bg-rose-500' : speakingSelf ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
+                  !micCaptured ? 'bg-rose-500' : muted ? 'bg-amber-400' : speakingSelf ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'
                 }`}
               />
               <div className="w-16 h-1.5 rounded-full bg-slate-800 overflow-hidden">
@@ -911,8 +912,8 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
                   style={{ width: `${Math.round(selfLevel * 100)}%` }}
                 />
               </div>
-              <span className={`text-[9px] font-mono w-8 text-right ${!micReady ? 'text-rose-400' : 'text-slate-400'}`}>
-                {!micReady ? 'NO MIC' : muted ? 'MUTE' : speakingSelf ? 'TALK' : 'IDLE'}
+              <span className={`text-[9px] font-mono w-8 text-right ${!micCaptured ? 'text-rose-400' : 'text-slate-400'}`}>
+                {!micCaptured ? 'NO MIC' : muted ? 'MUTE' : speakingSelf ? 'TALK' : 'IDLE'}
               </span>
             </div>
             <button
