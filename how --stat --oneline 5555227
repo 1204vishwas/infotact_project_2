@@ -1,0 +1,10 @@
+* [32mManas_Tiwari                            [m 5555227 security: harden authentication and Git configuration
+  main                                    [m 5555227 [[34morigin/main[m: ahead 1, behind 8] security: harden authentication and Git configuration
+  [31mremotes/origin/HEAD                     [m -> origin/main
+  [31mremotes/origin/Manas_Tiwari             [m 3bb622c Delete README.md
+  [31mremotes/origin/Raghavendra-Patne        [m 74d9c78 Merge remote Raghavendra-Patne history into rebuilt ProxiSpeak workspace
+  [31mremotes/origin/Shreyas---Hatture        [m e6c626f Merge pull request #2 from 1204vishwas/vishwas
+  [31mremotes/origin/feature/virtual-office-ui[m 0488c69 feat(dashboard): make all dashboard options, controls, and HUD elements fully responsive across mobile, tablet, and desktop
+  [31mremotes/origin/main                     [m 1a10b49 Merge pull request #4 from 1204vishwas/Manas_Tiwari
+  [31mremotes/origin/member-one               [m 41c1efb Create README.md
+  [31mremotes/origin/vishwas                  [m b6376bd feat(auth): restrict registration and login to Gmail only and add Google and Facebook OAuth sign-in options
