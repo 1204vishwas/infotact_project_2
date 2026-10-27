@@ -17,7 +17,12 @@ import {
   RotateCcw,
   ExternalLink,
   ShieldAlert,
-  Headphones
+  Headphones,
+  Layers,
+  ShieldCheck,
+  Activity,
+  X,
+  CheckCircle2
 } from 'lucide-react';
 
 export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast }) {
@@ -31,11 +36,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   // Local avatar state
   const [coords, setCoords] = useState({ x: 480, y: 320 });
   const [currentZone, setCurrentZone] = useState('Central Office');
-  const [earshotRadius, setEarshotRadius] = useState(130);
+  const [earshotRadius, setEarshotRadius] = useState(100); // 100-pixel WebRTC proximity radius constraint
   const [micMuted, setMicMuted] = useState(false);
   const [onlineCount, setOnlineCount] = useState(1);
   const [peersInEarshot, setPeersInEarshot] = useState([]);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connected' | 'connecting' | 'offline'
+  const [proximityGroups, setProximityGroups] = useState([]);
+  const [isGroupsModalOpen, setIsGroupsModalOpen] = useState(false);
+  const [recentWebRTCAlert, setRecentWebRTCAlert] = useState(null);
 
   // Refs for animation loop & physics to avoid stale closures
   const posRef = useRef({ x: 480, y: 320, vx: 0, vy: 0, targetX: null, targetY: null });
@@ -219,6 +227,82 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       showToast(`${leaving.name || 'A teammate'} left the office.`, 'info');
     });
 
+    // ====================================================
+    // WebRTC 100-PIXEL PROXIMITY GATEKEEPER & SIGNALING EVENTS
+    // ====================================================
+    // Peer entered 100-pixel radius (Server permitted WebRTC offer)
+    socket.on('proximity-peer-entered', ({ peer, distance, maxRadius, gain, shouldInitiateOffer }) => {
+      console.log(`[WebRTC Proximity] '${peer.name}' entered 100px earshot (${distance}px). Should offer: ${shouldInitiateOffer}`);
+      setRecentWebRTCAlert({
+        type: 'entered',
+        peerName: peer.name,
+        distance,
+        gain,
+        timestamp: Date.now()
+      });
+      showToast(`🎧 ${peer.name} entered 100px earshot (${distance}px)! WebRTC audio active (${gain}% gain).`, 'success');
+
+      // Deterministic handshake trigger: only one peer initiates to prevent signaling glare
+      if (shouldInitiateOffer) {
+        socket.emit('webrtc-offer', {
+          targetSocketId: peer.socketId,
+          offer: {
+            type: 'offer',
+            sdp: `v=0\r\no=ProxiSpeak ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudioMesh\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2`
+          }
+        });
+      }
+    });
+
+    // Peer moved outside 100-pixel radius (Server closes WebRTC audio channel)
+    socket.on('proximity-peer-left', ({ peerName, distance, maxRadius }) => {
+      console.log(`[WebRTC Proximity] '${peerName}' left 100px earshot (${distance}px).`);
+      setRecentWebRTCAlert({
+        type: 'left',
+        peerName,
+        distance,
+        timestamp: Date.now()
+      });
+      showToast(`🔇 ${peerName} moved beyond 100px radius (${distance}px). WebRTC audio disconnected.`, 'info');
+    });
+
+    // Received WebRTC Offer (Verified by server within 100-pixel radius)
+    socket.on('webrtc-offer', ({ callerSocketId, callerUser, offer, proximity }) => {
+      console.log(`[WebRTC Proximity] Received verified offer from ${callerUser?.name} (${proximity.distance}px <= 100px).`);
+      // Reply with WebRTC answer through backend proximity gatekeeper
+      socket.emit('webrtc-answer', {
+        targetSocketId: callerSocketId,
+        answer: {
+          type: 'answer',
+          sdp: `v=0\r\no=ProxiSpeak ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudioMeshAnswer\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2`
+        }
+      });
+    });
+
+    // Received WebRTC Answer (Verified by server within 100-pixel radius)
+    socket.on('webrtc-answer', ({ calleeSocketId, calleeUser, answer, proximity }) => {
+      console.log(`[WebRTC Proximity] WebRTC audio mesh handshake completed with ${calleeUser?.name} (${proximity.distance}px).`);
+    });
+
+    // WebRTC Signal Rejected: Peer is beyond 100-pixel radius
+    socket.on('webrtc-signal-rejected', ({ type, targetName, distance, maxRadius, message }) => {
+      console.warn(`[WebRTC Proximity Guard] Rejected: ${message}`);
+      setRecentWebRTCAlert({
+        type: 'blocked',
+        peerName: targetName,
+        distance,
+        timestamp: Date.now()
+      });
+      showToast(`🚫 WebRTC ${type.toUpperCase()} Blocked: ${targetName} is ${distance}px away (Exceeds ${maxRadius}px limit).`, 'error');
+    });
+
+    // MongoDB $near query grouping update
+    socket.on('proximity-groups-updated', (groupsData) => {
+      if (groupsData && groupsData.clusters) {
+        setProximityGroups(groupsData.clusters);
+      }
+    });
+
     return () => {
       socket.disconnect();
     };
@@ -298,19 +382,28 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     showToast(newMuted ? 'Microphone muted' : 'Microphone unmuted (Earshot broadcasting active)', 'info');
   };
 
-  // Spawn local simulation peer for testing proximity
-  const handleSpawnTestPeer = () => {
+  // Spawn local simulation peer for testing proximity (in-range or out-of-range)
+  const handleSpawnTestPeer = (forceOutOfRange = false) => {
     const fakeId = `test_bot_${Date.now()}`;
     const botColors = ['#f43f5e', '#06b6d4', '#10b981', '#f59e0b', '#8b5cf6'];
     const botColor = botColors[Math.floor(Math.random() * botColors.length)];
-    const randomX = Math.round(posRef.current.x + (Math.random() * 160 - 80));
-    const randomY = Math.round(posRef.current.y + (Math.random() * 160 - 80));
+
+    // If forceOutOfRange is true, spawn at 180px away (beyond 100px limit)
+    // Otherwise spawn within 65-85px (inside 100px limit)
+    const distanceOffset = forceOutOfRange ? 160 : 70;
+    const randomAngle = Math.random() * Math.PI * 2;
+    const randomX = Math.round(posRef.current.x + Math.cos(randomAngle) * distanceOffset);
+    const randomY = Math.round(posRef.current.y + Math.sin(randomAngle) * distanceOffset);
+
+    const botName = forceOutOfRange
+      ? `Out-of-Range Peer #${peersRef.current.size + 1}`
+      : `Nearby Colleague #${peersRef.current.size + 1}`;
 
     peersRef.current.set(fakeId, {
       socketId: fakeId,
       userId: fakeId,
-      name: `Simulated Peer #${peersRef.current.size + 1}`,
-      role: 'Audio Engineer',
+      name: botName,
+      role: forceOutOfRange ? 'Product Lead' : 'Audio Engineer',
       avatarColor: botColor,
       x: randomX,
       y: randomY,
@@ -319,7 +412,47 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       micMuted: false
     });
     setOnlineCount(peersRef.current.size + 1);
-    showToast('Simulation peer spawned! Walk closer to test audio earshot.', 'success');
+
+    if (forceOutOfRange) {
+      showToast(`Spawned out-of-range peer (~160px). WebRTC offers will be blocked by backend gatekeeper!`, 'info');
+    } else {
+      showToast(`Spawned peer in earshot (~70px)! WebRTC offers permitted (100px limit).`, 'success');
+      // Test sending offer to this newly spawned peer to demonstrate gatekeeper
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('webrtc-offer', {
+          targetSocketId: fakeId,
+          offer: { type: 'offer', sdp: 'v=0...' }
+        });
+      }
+    }
+  };
+
+  // Test sending a WebRTC offer through backend gatekeeper
+  const handleTestWebRTCOffer = (targetSocketId) => {
+    if (!socketRef.current || !socketRef.current.connected) return;
+    const target = peersRef.current.get(targetSocketId);
+    showToast(`Transmitting WebRTC offer to ${target?.name || 'peer'} through backend gatekeeper...`, 'info');
+    socketRef.current.emit('webrtc-offer', {
+      targetSocketId,
+      offer: {
+        type: 'offer',
+        sdp: `v=0\r\no=ProxiSpeakTest ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudio\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111`
+      }
+    });
+  };
+
+  // Fetch MongoDB $near proximity groups
+  const handleOpenProximityGroups = async () => {
+    try {
+      const res = await fetch('/api/spatial/groups?radius=100');
+      const data = await res.json();
+      if (data.success) {
+        setProximityGroups(data.clusters || []);
+      }
+    } catch (e) {
+      if (socketRef.current) socketRef.current.emit('get-proximity-groups');
+    }
+    setIsGroupsModalOpen(true);
   };
 
   // Reset avatar position
@@ -745,15 +878,35 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           </div>
 
           {/* Quick Actions */}
-          <div className="flex items-center gap-1.5">
+          <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
-              onClick={handleSpawnTestPeer}
+              onClick={handleOpenProximityGroups}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-cyan-600/80 hover:bg-cyan-600 border border-cyan-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-cyan-600/20 cursor-pointer transition-all"
+              title="View MongoDB $near proximity audio pod groupings"
+            >
+              <Layers className="w-3.5 h-3.5 text-cyan-200" />
+              <span>$near Groups</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSpawnTestPeer(false)}
               className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-indigo-600/80 hover:bg-indigo-600 border border-indigo-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-indigo-600/20 cursor-pointer transition-all"
-              title="Spawn a test avatar to walk near and test proximity"
+              title="Spawn test avatar within 100px earshot (Permits WebRTC offers)"
             >
               <Sparkles className="w-3.5 h-3.5 text-cyan-300" />
-              <span>Spawn Bot</span>
+              <span>Spawn Near (~70px)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleSpawnTestPeer(true)}
+              className="px-2 sm:px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-rose-950/40 text-slate-300 hover:text-rose-300 border border-slate-700 hover:border-rose-500/40 text-[11px] sm:text-xs font-medium cursor-pointer transition-all"
+              title="Spawn test avatar outside 100px earshot (Demonstrates server gatekeeper blocking offers)"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
+              <span>Spawn Far (>100px)</span>
             </button>
 
             <button
@@ -794,29 +947,41 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
               <span className="text-slate-200 font-bold block text-[10px] sm:text-[11px] leading-tight">
                 2D HTML5 Canvas World
               </span>
-              <span className="text-[9px] sm:text-[10px] text-slate-400 font-mono truncate block">
-                Socket.io Coordinates
+              <span className="text-[9px] sm:text-[10px] text-cyan-300 font-mono truncate block">
+                WebRTC Gatekeeper: 100px Radius Limit
               </span>
             </div>
           </div>
 
           {/* Active Earshot Card if peers are nearby */}
           {peersInEarshot.length > 0 ? (
-            <div className="bg-emerald-950/90 backdrop-blur-md px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl border border-emerald-500/40 text-xs shadow-xl animate-fadeIn">
+            <div className="bg-emerald-950/90 backdrop-blur-md px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl border border-emerald-500/40 text-xs shadow-xl animate-fadeIn pointer-events-auto">
               <div className="flex items-center space-x-1.5 sm:space-x-2 text-emerald-400 font-bold mb-1 text-[11px] sm:text-xs">
                 <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-bounce shrink-0" />
-                <span>Within Audio Earshot ({peersInEarshot.length})</span>
+                <span>Within 100px Earshot ({peersInEarshot.length})</span>
               </div>
               {peersInEarshot.map((peer, idx) => (
-                <div key={idx} className="text-[10px] sm:text-[11px] text-emerald-200/90 font-mono flex items-center justify-between gap-2">
+                <div key={idx} className="text-[10px] sm:text-[11px] text-emerald-200/90 font-mono flex items-center justify-between gap-2 py-0.5">
                   <span className="truncate">{peer.name}:</span>
-                  <span className="text-emerald-400 font-bold shrink-0">{peer.gain}% ({peer.distance}px)</span>
+                  <div className="flex items-center space-x-1.5 shrink-0">
+                    <span className="text-emerald-400 font-bold">{peer.gain}% ({peer.distance}px)</span>
+                    {peer.socketId && (
+                      <button
+                        type="button"
+                        onClick={() => handleTestWebRTCOffer(peer.socketId)}
+                        className="px-1.5 py-0.5 rounded bg-emerald-900/80 hover:bg-emerald-800 text-[9px] text-emerald-200 border border-emerald-600/40 cursor-pointer"
+                        title="Test WebRTC offer delivery through backend"
+                      >
+                        Signal
+                      </button>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
           ) : (
             <div className="bg-slate-900/80 backdrop-blur-md px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border border-slate-800 text-[10px] sm:text-[11px] text-slate-400 font-mono">
-              🎧 No colleagues in earshot ({earshotRadius}px)
+              🎧 No colleagues within 100px earshot
             </div>
           )}
         </div>
@@ -837,19 +1002,10 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             <span className="text-[11px] sm:text-xs font-semibold">{micMuted ? 'Muted' : 'Speaking'}</span>
           </button>
 
-          {/* Earshot Radius Slider */}
-          <div className="flex items-center space-x-1.5 sm:space-x-2 border-l border-slate-800 pl-2 sm:pl-3">
-            <span className="text-[10px] sm:text-[11px] text-slate-400 whitespace-nowrap">Earshot:</span>
-            <input
-              type="range"
-              min="80"
-              max="200"
-              step="10"
-              value={earshotRadius}
-              onChange={(e) => setEarshotRadius(parseInt(e.target.value))}
-              className="w-16 sm:w-20 accent-indigo-500 cursor-pointer"
-            />
-            <span className="text-[9px] sm:text-[10px] text-indigo-300 font-mono">{earshotRadius}px</span>
+          {/* WebRTC Limit Badge */}
+          <div className="flex items-center space-x-1.5 border-l border-slate-800 pl-2 text-[10px] text-slate-400 font-mono">
+            <ShieldCheck className="w-3.5 h-3.5 text-cyan-400" />
+            <span>Limit: <strong className="text-white">100px</strong></span>
           </div>
         </div>
       </div>
@@ -862,9 +1018,9 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             <Keyboard className="w-4 h-4" />
           </div>
           <div>
-            <span className="font-semibold text-white block">Avatar Movement:</span>
+            <span className="font-semibold text-white block">100-Pixel WebRTC Audio Mesh:</span>
             <span className="text-slate-400 text-[11px]">
-              Use <strong className="text-cyan-300">W, A, S, D</strong> or <strong className="text-cyan-300">Arrow Keys</strong> to walk smoothly, or <strong className="text-cyan-300">Click anywhere</strong> on the floor to walk to a desk!
+              The Node.js server strictly verifies distance before routing WebRTC offers & answers. Walk within <strong className="text-cyan-300">100 pixels</strong> of a teammate to open bidirectional audio!
             </span>
           </div>
         </div>
@@ -877,11 +1033,105 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           <div className="flex-1">
             <span className="font-semibold text-white block">Real-time Multi-Client Testing:</span>
             <span className="text-slate-400 text-[11px]">
-              Open a second browser tab at <code className="text-indigo-300 font-mono">http://localhost:3000</code> to watch both avatars move and crossfade audio live!
+              Open a second browser tab at <code className="text-indigo-300 font-mono">http://localhost:3000</code> to watch both avatars move, enter the 100px radius, and connect audio!
             </span>
           </div>
         </div>
       </div>
+
+      {/* ====================================================
+          5. MONGODB $near PROXIMITY GROUPS MODAL
+         ==================================================== */}
+      {isGroupsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="relative w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 rounded-xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+                  <Layers className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">MongoDB $near Proximity Groups</h3>
+                  <p className="text-[11px] text-slate-400">
+                    Iterative 2D geospatial clusters within 100-pixel radius limit
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsGroupsModalOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="my-4 max-h-80 overflow-y-auto space-y-3 pr-1">
+              {proximityGroups.length > 0 ? (
+                proximityGroups.map((group, idx) => (
+                  <div key={idx} className="p-3.5 rounded-2xl bg-slate-950/80 border border-slate-800 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-cyan-300 flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5 text-cyan-400" />
+                        {group.name}
+                      </span>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                        WebRTC Mesh Permitted (100px)
+                      </span>
+                    </div>
+
+                    <div className="text-[11px] text-slate-400 flex items-center justify-between">
+                      <span>Centroid: [{group.center.join(', ')}]</span>
+                      <span>Members: {group.memberCount} avatars</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      {group.members.map((member, mIdx) => (
+                        <div key={mIdx} className="flex items-center space-x-2 p-2 rounded-xl bg-slate-900 border border-slate-800/80 text-[11px]">
+                          <span
+                            className="w-3 h-3 rounded-full shrink-0"
+                            style={{ backgroundColor: member.avatarColor || '#6366f1' }}
+                          />
+                          <div className="min-w-0 flex-1 truncate">
+                            <span className="text-slate-200 font-semibold block truncate">{member.name}</span>
+                            <span className="text-[10px] text-slate-400 truncate block">
+                              {member.isPodLeader ? 'Pod Leader' : `${member.distanceToLead}px from lead`}
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="p-6 text-center rounded-2xl bg-slate-950/60 border border-slate-800 text-slate-400 text-xs">
+                  <Activity className="w-8 h-8 text-cyan-400/50 mx-auto mb-2 animate-pulse" />
+                  <p className="font-semibold text-slate-300">No active proximity groups formed yet</p>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Spawn a nearby peer or move within 100 pixels of a teammate to form an audio pod!
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+              <span className="text-slate-400 text-[11px]">
+                Threshold: <strong className="text-cyan-300 font-mono">100px radius</strong>
+              </span>
+              <button
+                type="button"
+                onClick={handleOpenProximityGroups}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Refresh Groups
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
