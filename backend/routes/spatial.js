@@ -104,7 +104,7 @@ router.get('/nearby', async (req, res) => {
   try {
     const x = parseFloat(req.query.x);
     const y = parseFloat(req.query.y);
-    const radius = parseFloat(req.query.radius) || 150;
+    const radius = parseFloat(req.query.radius) || 100; // Default to 100-pixel WebRTC earshot radius
 
     if (isNaN(x) || isNaN(y)) {
       return res.status(400).json({ success: false, message: 'Invalid coordinates x and y.' });
@@ -116,12 +116,73 @@ router.get('/nearby', async (req, res) => {
     res.json({
       success: true,
       query: { x, y, radius },
+      webrtcThreshold: 100,
       totalFound: nearbyUsers.length,
       users: nearbyUsers
     });
   } catch (err) {
     console.error('Geospatial query error:', err);
     res.status(500).json({ success: false, message: 'Failed to execute geospatial proximity query.' });
+  }
+});
+
+// ====================================================
+// 3. GET /api/spatial/groups — Group Users Using MongoDB $near
+// ====================================================
+router.get('/groups', async (req, res) => {
+  try {
+    const radius = parseFloat(req.query.radius) || 100; // 100-pixel radius threshold
+
+    const groupingResult = await User.groupUsersByProximity(radius);
+
+    res.json({
+      success: true,
+      description: 'Proximity groupings generated via iterative MongoDB $near queries on 2D planar index',
+      webrtcRadiusLimit: radius,
+      ...groupingResult
+    });
+  } catch (err) {
+    console.error('Geospatial grouping error:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to execute MongoDB $near user grouping query.'
+    });
+  }
+});
+
+// ====================================================
+// 4. POST /api/spatial/verify-proximity — WebRTC Proximity Gatekeeper
+// ====================================================
+router.post('/verify-proximity', async (req, res) => {
+  try {
+    const { fromCoords, toCoords, maxRadius = 100 } = req.body;
+
+    if (!fromCoords || !toCoords || !Array.isArray(fromCoords) || !Array.isArray(toCoords)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide fromCoords [x, y] and toCoords [x, y].'
+      });
+    }
+
+    const dx = fromCoords[0] - toCoords[0];
+    const dy = fromCoords[1] - toCoords[1];
+    const distance = Math.round(Math.sqrt(dx * dx + dy * dy));
+    const inRange = distance <= maxRadius;
+    const gain = inRange ? Math.max(10, Math.min(100, Math.round((1 - distance / maxRadius) * 100))) : 0;
+
+    res.json({
+      success: true,
+      fromCoords,
+      toCoords,
+      distance,
+      maxRadius,
+      inRange,
+      gain,
+      webrtcOfferPermitted: inRange,
+      status: inRange ? 'ALLOWED' : 'BLOCKED'
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to verify proximity.' });
   }
 });
 

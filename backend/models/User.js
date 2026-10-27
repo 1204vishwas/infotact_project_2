@@ -82,14 +82,116 @@ const userSchema = new mongoose.Schema({
 // Flat 2D planar index for 2D Canvas coordinates with pixel bounds
 userSchema.index({ location: '2d' }, { min: -1000, max: 10000 });
 
-// Geospatial query helper using native MongoDB $near for proximity detection
-userSchema.statics.findNearby = function(x, y, maxDistance = 150) {
-  return this.find({
+// Geospatial query helper using native MongoDB $near for proximity detection with distance & gain calculations
+userSchema.statics.findNearby = async function(x, y, maxDistance = 100) {
+  const users = await this.find({
     location: {
       $near: [x, y],
       $maxDistance: maxDistance
     }
-  }).select('-password');
+  }).select('-password').lean();
+
+  return users.map(u => {
+    const dx = u.location[0] - x;
+    const dy = u.location[1] - y;
+    const distance = Math.round(Math.sqrt(dx * dx + dy * dy));
+    const gain = Math.max(0, Math.min(100, Math.round((1 - distance / maxDistance) * 100)));
+    return {
+      ...u,
+      distance,
+      inWebRTCRange: distance <= 100,
+      gain
+    };
+  });
+};
+
+// Proximity Calculations: Implement MongoDB $near queries to group users into audio pods
+userSchema.statics.groupUsersByProximity = async function(radius = 100) {
+  // Retrieve all users currently in the office space
+  const allUsers = await this.find({}).select('-password').lean();
+  if (!allUsers || allUsers.length === 0) {
+    return { clusters: [], soloUsers: [], totalUsers: 0, radius };
+  }
+
+  const visited = new Set();
+  const clusters = [];
+  const soloUsers = [];
+
+  for (const user of allUsers) {
+    const userIdStr = user._id.toString();
+    if (visited.has(userIdStr)) continue;
+
+    const [ux, uy] = user.location;
+
+    // Execute native MongoDB $near query centered at this user's [x, y] coordinates
+    const nearbyPeers = await this.find({
+      _id: { $ne: user._id },
+      location: {
+        $near: [ux, uy],
+        $maxDistance: radius
+      }
+    }).select('-password').lean();
+
+    if (nearbyPeers && nearbyPeers.length > 0) {
+      // Cluster found! Form an audio pod group
+      const clusterMembers = [
+        {
+          ...user,
+          isPodLeader: true,
+          distanceToLead: 0,
+          gain: 100
+        }
+      ];
+      visited.add(userIdStr);
+
+      for (const peer of nearbyPeers) {
+        const peerIdStr = peer._id.toString();
+        if (!visited.has(peerIdStr)) {
+          visited.add(peerIdStr);
+          const dx = peer.location[0] - ux;
+          const dy = peer.location[1] - uy;
+          const dist = Math.round(Math.sqrt(dx * dx + dy * dy));
+          const gain = Math.max(10, Math.min(100, Math.round((1 - dist / radius) * 100)));
+          clusterMembers.push({
+            ...peer,
+            isPodLeader: false,
+            distanceToLead: dist,
+            gain
+          });
+        }
+      }
+
+      // Compute cluster center coordinates
+      const avgX = Math.round(clusterMembers.reduce((sum, m) => sum + m.location[0], 0) / clusterMembers.length);
+      const avgY = Math.round(clusterMembers.reduce((sum, m) => sum + m.location[1], 0) / clusterMembers.length);
+
+      clusters.push({
+        groupId: `pod-${clusters.length + 1}`,
+        name: `Audio Pod ${clusters.length + 1}`,
+        center: [avgX, avgY],
+        radius,
+        memberCount: clusterMembers.length,
+        members: clusterMembers,
+        audioMeshAllowed: true,
+        webrtcEligibleCount: clusterMembers.length
+      });
+    } else {
+      visited.add(userIdStr);
+      soloUsers.push({
+        ...user,
+        message: 'No peers within 100-pixel radius (WebRTC offers restricted)',
+        inWebRTCRange: false
+      });
+    }
+  }
+
+  return {
+    clusters,
+    soloUsers,
+    totalClusters: clusters.length,
+    totalUsers: allUsers.length,
+    radius
+  };
 };
 
 // Geospatial query helper using native MongoDB $geoWithin for office room boundary clusters
