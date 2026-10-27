@@ -906,7 +906,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
               title="Spawn test avatar outside 100px earshot (Demonstrates server gatekeeper blocking offers)"
             >
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-              <span>Spawn Far (>100px)</span>
+              <span>Spawn Far (&gt;100px)</span>
             </button>
 
             <button
