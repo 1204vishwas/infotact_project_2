@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { io } from 'socket.io-client';
 import {
   Mic,
@@ -22,12 +22,21 @@ import {
   ShieldCheck,
   Activity,
   X,
-  CheckCircle2
+  CheckCircle2,
+  Sliders,
+  AlertCircle,
+  Play,
+  Square,
+  Wrench
 } from 'lucide-react';
+
+import { WebRTCAudioManager } from '../utils/webrtcManager';
+import AudioWaveformVisualizer from './AudioWaveformVisualizer';
 
 export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast }) {
   const canvasRef = useRef(null);
   const socketRef = useRef(null);
+  const webrtcManagerRef = useRef(null);
 
   // Canvas dimensions
   const WORLD_WIDTH = 960;
@@ -38,17 +47,25 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   const [currentZone, setCurrentZone] = useState('Central Office');
   const [earshotRadius, setEarshotRadius] = useState(100); // 100-pixel WebRTC proximity radius constraint
   const [micMuted, setMicMuted] = useState(false);
+  const [isMicActive, setIsMicActive] = useState(false);
+  const [micPermissionState, setMicPermissionState] = useState('prompt'); // 'prompt' | 'granted' | 'denied'
   const [onlineCount, setOnlineCount] = useState(1);
   const [peersInEarshot, setPeersInEarshot] = useState([]);
   const [connectionStatus, setConnectionStatus] = useState('connecting'); // 'connected' | 'connecting' | 'offline'
   const [proximityGroups, setProximityGroups] = useState([]);
   const [isGroupsModalOpen, setIsGroupsModalOpen] = useState(false);
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [recentWebRTCAlert, setRecentWebRTCAlert] = useState(null);
+  const [peerConnectionStates, setPeerConnectionStates] = useState({});
+  const [botAudioActive, setBotAudioActive] = useState(false);
+
+  // Audio simulation oscillator for bot test
+  const botOscillatorRef = useRef(null);
 
   // Refs for animation loop & physics to avoid stale closures
   const posRef = useRef({ x: 480, y: 320, vx: 0, vy: 0, targetX: null, targetY: null });
   const keysRef = useRef({ w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false });
-  const peersRef = useRef(new Map()); // socketId -> { name, role, avatarColor, x, y, targetX, targetY, micMuted }
+  const peersRef = useRef(new Map()); // socketId -> { name, role, avatarColor, x, y, targetX, targetY, micMuted, isBot }
   const lastEmitTime = useRef(0);
   const reticleRef = useRef(null); // click target visual ripple { x, y, opacity, size }
 
@@ -104,88 +121,162 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     }
   ];
 
-  // Office Desks & Obstacles with collision bounds
+  // Furniture & Obstacles
   const obstacles = [
+    // Core Engineering Bay Desks
+    { x: 550, y: 80, width: 140, height: 60, label: 'WebRTC Cluster Pod 1', color: '#1e293b' },
+    { x: 740, y: 80, width: 140, height: 60, label: 'WebSocket Cluster Pod 2', color: '#1e293b' },
+    { x: 550, y: 190, width: 140, height: 60, label: 'Frontend Mesh Station', color: '#1e293b' },
+    { x: 740, y: 190, width: 140, height: 60, label: 'Node Gateway Station', color: '#1e293b' },
     // Audio Lab Consoles
-    { x: 100, y: 90, width: 110, height: 50, label: '3D Mixing Station', color: '#1e293b' },
-    { x: 270, y: 90, width: 110, height: 50, label: 'Audio DSP Rack', color: '#1e293b' },
-    // Engineering Desks
-    { x: 570, y: 90, width: 120, height: 50, label: 'WebRTC Cluster A', color: '#1e293b' },
-    { x: 750, y: 90, width: 120, height: 50, label: 'WebSocket Cluster B', color: '#1e293b' },
-    { x: 570, y: 190, width: 120, height: 50, label: 'Canvas Rendering Dev', color: '#1e293b' },
-    { x: 750, y: 190, width: 120, height: 50, label: 'MongoDB Geospatial', color: '#1e293b' },
-    // Product Conference Table
-    { x: 130, y: 440, width: 180, height: 70, label: 'Sprint Roadmap Island', color: '#1e293b' },
-    // Lounge Coffee Bar & Couches
-    { x: 670, y: 440, width: 160, height: 60, label: 'Infotact Coffee Bar', color: '#1e293b' }
+    { x: 70, y: 90, width: 150, height: 60, label: 'Audio DSP Mixing Board', color: '#1e293b' },
+    { x: 260, y: 90, width: 140, height: 60, label: 'Acoustic Synthesizer Rack', color: '#1e293b' },
+    // Product Hub Desks
+    { x: 80, y: 440, width: 180, height: 70, label: 'UX Wireframe Island', color: '#1e293b' },
+    // Lounge Pantry Coffee & Table
+    { x: 640, y: 440, width: 160, height: 70, label: 'Pantry Island & Water Cooler', color: '#1e293b' }
   ];
 
-  // Detect current zone based on coordinates
+  // Helper: Find current office zone
   const getZoneAt = (x, y) => {
     for (const z of zones) {
       if (x >= z.x && x <= z.x + z.width && y >= z.y && y <= z.y + z.height) {
-        return `${z.icon} ${z.name}`;
+        return z.name;
       }
     }
-    return '🏢 Central Concourse';
+    return 'Central Concourse';
   };
 
   // ====================================================
-  // 1. SETUP SOCKET.IO WEBSOCKET CONNECTION
+  // 1. INITIALIZE WEBRTC AUDIO MANAGER & MICROPHONE
+  // ====================================================
+  useEffect(() => {
+    const manager = new WebRTCAudioManager({
+      onConnectionStateChange: (peerId, state) => {
+        setPeerConnectionStates((prev) => ({ ...prev, [peerId]: state }));
+      },
+      showToast
+    });
+    webrtcManagerRef.current = manager;
+
+    // Check if browser permission was already granted previously
+    if (navigator.permissions && navigator.permissions.query) {
+      navigator.permissions.query({ name: 'microphone' }).then((status) => {
+        setMicPermissionState(status.state);
+        if (status.state === 'granted') {
+          manager.initMicrophone().then((stream) => {
+            if (stream) {
+              setIsMicActive(true);
+              setMicPermissionState('granted');
+            }
+          });
+        }
+        status.onchange = () => {
+          setMicPermissionState(status.state);
+        };
+      }).catch(() => {});
+    }
+
+    return () => {
+      manager.destroy();
+      stopBotAudio();
+    };
+  }, []);
+
+  const handleInitMicrophone = async () => {
+    if (!webrtcManagerRef.current) return;
+    const stream = await webrtcManagerRef.current.initMicrophone();
+    if (stream) {
+      setIsMicActive(true);
+      setMicPermissionState('granted');
+      setMicMuted(false);
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('audio-state-change', { micMuted: false, deafened: false });
+      }
+    } else {
+      setMicPermissionState('denied');
+    }
+  };
+
+  // Toggle mic mute state and broadcast
+  const handleToggleMic = () => {
+    if (!webrtcManagerRef.current) return;
+    if (!isMicActive) {
+      handleInitMicrophone();
+      return;
+    }
+
+    const newMuted = !micMuted;
+    webrtcManagerRef.current.setMuted(newMuted);
+    setMicMuted(newMuted);
+
+    if (socketRef.current && socketRef.current.connected) {
+      socketRef.current.emit('audio-state-change', {
+        micMuted: newMuted,
+        deafened: false
+      });
+    }
+    showToast(newMuted ? 'Microphone muted' : 'Microphone unmuted (Earshot broadcasting active)', 'info');
+  };
+
+  // ====================================================
+  // 2. SOCKET.IO CONNECTION & WEBRTC SIGNALING HANDSHAKE
   // ====================================================
   useEffect(() => {
     const socket = io('/', {
-      transports: ['websocket', 'polling']
+      transports: ['websocket', 'polling'],
+      reconnectionAttempts: 10,
+      reconnectionDelay: 1000
     });
     socketRef.current = socket;
 
     socket.on('connect', () => {
       setConnectionStatus('connected');
-      console.log('[ProxiSpeak Client] Connected to signaling server:', socket.id);
+      console.log('[ProxiSpeak Socket] Connected to signaling server with id:', socket.id);
 
-      // Join space with current user profile
-      const initialLocation = [posRef.current.x, posRef.current.y];
+      // Join the Virtual Office Space
       socket.emit('join-space', {
         id: user?.id || user?._id,
-        name: user?.name || 'ProxiSpeak Member',
-        username: user?.username || 'user',
-        role: user?.role || 'Developer',
-        avatarColor: user?.avatarColor || '#6366f1',
-        location: initialLocation
+        name: user?.name,
+        username: user?.username,
+        role: user?.role,
+        avatarColor: user?.avatarColor,
+        location: [posRef.current.x, posRef.current.y]
       });
-    });
 
-    socket.on('connect_error', () => {
-      setConnectionStatus('offline');
+      showToast('Connected to ProxiSpeak Virtual Office!', 'success');
     });
 
     socket.on('disconnect', () => {
       setConnectionStatus('offline');
+      console.log('[ProxiSpeak Socket] Disconnected from server');
     });
 
-    // Receive existing peer avatars in the office space
-    socket.on('space-state', (data) => {
-      const { peers, totalOnline } = data;
+    // Receive space state (initial active peers)
+    socket.on('space-state', ({ self, peers: existingPeers, totalOnline }) => {
       setOnlineCount(totalOnline || 1);
-      const newMap = new Map();
-      peers.forEach((p) => {
-        newMap.set(p.socketId, {
-          socketId: p.socketId,
-          userId: p.userId,
-          name: p.name,
-          role: p.role,
-          avatarColor: p.avatarColor,
-          x: p.location[0],
-          y: p.location[1],
-          targetX: p.location[0],
-          targetY: p.location[1],
-          micMuted: p.micMuted
+      const newPeers = new Map();
+      if (Array.isArray(existingPeers)) {
+        existingPeers.forEach((p) => {
+          newPeers.set(p.socketId, {
+            socketId: p.socketId,
+            userId: p.userId,
+            name: p.name,
+            role: p.role,
+            avatarColor: p.avatarColor,
+            x: p.location[0],
+            y: p.location[1],
+            targetX: p.location[0],
+            targetY: p.location[1],
+            micMuted: p.micMuted,
+            isBot: false
+          });
         });
-      });
-      peersRef.current = newMap;
+      }
+      peersRef.current = newPeers;
     });
 
-    // Remote peer joined space
+    // Remote peer joined
     socket.on('user-joined', (p) => {
       peersRef.current.set(p.socketId, {
         socketId: p.socketId,
@@ -197,7 +288,8 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         y: p.location[1],
         targetX: p.location[0],
         targetY: p.location[1],
-        micMuted: p.micMuted
+        micMuted: p.micMuted,
+        isBot: false
       });
       setOnlineCount(peersRef.current.size + 1);
       showToast(`${p.name} joined the virtual office!`, 'info');
@@ -223,15 +315,24 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     // Remote peer left
     socket.on('user-left', (leaving) => {
       peersRef.current.delete(leaving.socketId);
+      if (webrtcManagerRef.current) {
+        webrtcManagerRef.current.closePeerConnection(leaving.socketId);
+      }
+      setPeerConnectionStates((prev) => {
+        const next = { ...prev };
+        delete next[leaving.socketId];
+        return next;
+      });
       setOnlineCount(peersRef.current.size + 1);
       showToast(`${leaving.name || 'A teammate'} left the office.`, 'info');
     });
 
     // ====================================================
-    // WebRTC 100-PIXEL PROXIMITY GATEKEEPER & SIGNALING EVENTS
+    // 3. WebRTC 100-PIXEL PROXIMITY GATEKEEPER & SIGNALING EVENTS
     // ====================================================
+
     // Peer entered 100-pixel radius (Server permitted WebRTC offer)
-    socket.on('proximity-peer-entered', ({ peer, distance, maxRadius, gain, shouldInitiateOffer }) => {
+    socket.on('proximity-peer-entered', async ({ peer, distance, maxRadius, gain, shouldInitiateOffer }) => {
       console.log(`[WebRTC Proximity] '${peer.name}' entered 100px earshot (${distance}px). Should offer: ${shouldInitiateOffer}`);
       setRecentWebRTCAlert({
         type: 'entered',
@@ -242,21 +343,40 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       });
       showToast(`🎧 ${peer.name} entered 100px earshot (${distance}px)! WebRTC audio active (${gain}% gain).`, 'success');
 
-      // Deterministic handshake trigger: only one peer initiates to prevent signaling glare
-      if (shouldInitiateOffer) {
-        socket.emit('webrtc-offer', {
-          targetSocketId: peer.socketId,
-          offer: {
-            type: 'offer',
-            sdp: `v=0\r\no=ProxiSpeak ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudioMesh\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2`
+      if (webrtcManagerRef.current) {
+        webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, maxRadius);
+
+        // Deterministic handshake trigger: only one peer initiates to prevent signaling glare
+        if (shouldInitiateOffer) {
+          try {
+            webrtcManagerRef.current.createPeerConnection(peer.socketId, {
+              onIceCandidate: (candidate) => {
+                socket.emit('webrtc-ice-candidate', {
+                  targetSocketId: peer.socketId,
+                  candidate
+                });
+              },
+              onConnectionStateChange: (state) => {
+                setPeerConnectionStates((prev) => ({ ...prev, [peer.socketId]: state }));
+              }
+            });
+
+            const offer = await webrtcManagerRef.current.createOffer(peer.socketId);
+            socket.emit('webrtc-offer', {
+              targetSocketId: peer.socketId,
+              offer
+            });
+            console.log(`[WebRTC Proximity] Dispatched verified offer to ${peer.name}`);
+          } catch (err) {
+            console.error('[WebRTC Proximity] Failed to initiate offer:', err);
           }
-        });
+        }
       }
     });
 
     // Peer moved outside 100-pixel radius (Server closes WebRTC audio channel)
-    socket.on('proximity-peer-left', ({ peerName, distance, maxRadius }) => {
-      console.log(`[WebRTC Proximity] '${peerName}' left 100px earshot (${distance}px).`);
+    socket.on('proximity-peer-left', ({ peerSocketId, peerName, distance, maxRadius }) => {
+      console.log(`[WebRTC Proximity] '${peerName}' left 100px earshot (${distance}px). WebRTC disconnected.`);
       setRecentWebRTCAlert({
         type: 'left',
         peerName,
@@ -264,24 +384,75 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         timestamp: Date.now()
       });
       showToast(`🔇 ${peerName} moved beyond 100px radius (${distance}px). WebRTC audio disconnected.`, 'info');
-    });
 
-    // Received WebRTC Offer (Verified by server within 100-pixel radius)
-    socket.on('webrtc-offer', ({ callerSocketId, callerUser, offer, proximity }) => {
-      console.log(`[WebRTC Proximity] Received verified offer from ${callerUser?.name} (${proximity.distance}px <= 100px).`);
-      // Reply with WebRTC answer through backend proximity gatekeeper
-      socket.emit('webrtc-answer', {
-        targetSocketId: callerSocketId,
-        answer: {
-          type: 'answer',
-          sdp: `v=0\r\no=ProxiSpeak ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudioMeshAnswer\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2`
-        }
+      if (webrtcManagerRef.current) {
+        webrtcManagerRef.current.closePeerConnection(peerSocketId);
+      }
+      setPeerConnectionStates((prev) => {
+        const next = { ...prev };
+        delete next[peerSocketId];
+        return next;
       });
     });
 
+    // Received WebRTC Offer (Verified by server within 100-pixel radius)
+    socket.on('webrtc-offer', async ({ callerSocketId, callerUser, offer, proximity }) => {
+      console.log(`[WebRTC Proximity] Received verified offer from ${callerUser?.name} (${proximity?.distance}px <= 100px).`);
+
+      if (webrtcManagerRef.current) {
+        try {
+          webrtcManagerRef.current.createPeerConnection(callerSocketId, {
+            onIceCandidate: (candidate) => {
+              socket.emit('webrtc-ice-candidate', {
+                targetSocketId: callerSocketId,
+                candidate
+              });
+            },
+            onConnectionStateChange: (state) => {
+              setPeerConnectionStates((prev) => ({ ...prev, [callerSocketId]: state }));
+            }
+          });
+
+          webrtcManagerRef.current.setPeerDistance(callerSocketId, proximity?.distance || 50, 100);
+
+          const answer = await webrtcManagerRef.current.handleOffer(callerSocketId, offer);
+          socket.emit('webrtc-answer', {
+            targetSocketId: callerSocketId,
+            answer
+          });
+          console.log(`[WebRTC Proximity] Replied with verified answer to ${callerUser?.name}`);
+        } catch (err) {
+          console.error('[WebRTC Proximity] Failed to handle offer:', err);
+        }
+      }
+    });
+
     // Received WebRTC Answer (Verified by server within 100-pixel radius)
-    socket.on('webrtc-answer', ({ calleeSocketId, calleeUser, answer, proximity }) => {
-      console.log(`[WebRTC Proximity] WebRTC audio mesh handshake completed with ${calleeUser?.name} (${proximity.distance}px).`);
+    socket.on('webrtc-answer', async ({ calleeSocketId, calleeUser, answer, proximity }) => {
+      console.log(`[WebRTC Proximity] WebRTC audio mesh handshake completed with ${calleeUser?.name} (${proximity?.distance}px).`);
+
+      if (webrtcManagerRef.current) {
+        try {
+          await webrtcManagerRef.current.handleAnswer(calleeSocketId, answer);
+          if (proximity?.distance) {
+            webrtcManagerRef.current.setPeerDistance(calleeSocketId, proximity.distance, 100);
+          }
+          showToast(`🎧 Connected live audio with ${calleeUser?.name}!`, 'success');
+        } catch (err) {
+          console.error('[WebRTC Proximity] Failed to handle answer:', err);
+        }
+      }
+    });
+
+    // Received WebRTC ICE Candidate (Verified by server within 100-pixel radius)
+    socket.on('webrtc-ice-candidate', async ({ senderSocketId, candidate }) => {
+      if (webrtcManagerRef.current) {
+        try {
+          await webrtcManagerRef.current.handleIceCandidate(senderSocketId, candidate);
+        } catch (err) {
+          console.error('[WebRTC Proximity] Failed to handle ICE candidate:', err);
+        }
+      }
     });
 
     // WebRTC Signal Rejected: Peer is beyond 100-pixel radius
@@ -309,16 +480,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   }, [user]);
 
   // ====================================================
-  // 2. KEYBOARD CONTROLS (WASD & ARROWS)
+  // 4. KEYBOARD CONTROLS (WASD & ARROWS)
   // ====================================================
   useEffect(() => {
     const handleKeyDown = (e) => {
       const key = e.key;
       if (['w', 'a', 's', 'd', 'W', 'A', 'S', 'D', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'].includes(key)) {
-        // Prevent page scrolling on arrow keys
         e.preventDefault();
         keysRef.current[key.toLowerCase()] = true;
-        // Keyboard overrides mouse target
         posRef.current.targetX = null;
         posRef.current.targetY = null;
         reticleRef.current = null;
@@ -328,6 +497,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     const handleKeyUp = (e) => {
       const key = e.key;
       if (['w', 'a', 's', 'd', 'W', 'A', 'S', 'D', 'ArrowUp', 'ArrowLeft', 'ArrowDown', 'ArrowRight'].includes(key)) {
+        e.preventDefault();
         keysRef.current[key.toLowerCase()] = false;
       }
     };
@@ -342,11 +512,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   }, []);
 
   // ====================================================
-  // 3. MOUSE CLICK-TO-MOVE CONTROLS
+  // 5. MOUSE CLICK-TO-MOVE WAYPOINT NAVIGATION
   // ====================================================
   const handleCanvasClick = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Resume AudioContext if user clicks on canvas (browser autoplay policy)
+    if (webrtcManagerRef.current) {
+      webrtcManagerRef.current.getAudioContext();
+    }
 
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width;
@@ -355,11 +530,9 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     const clickX = Math.round((e.clientX - rect.left) * scaleX);
     const clickY = Math.round((e.clientY - rect.top) * scaleY);
 
-    // Set target waypoint for smooth walking
     posRef.current.targetX = clickX;
     posRef.current.targetY = clickY;
 
-    // Visual ripple effect at clicked coordinates
     reticleRef.current = {
       x: clickX,
       y: clickY,
@@ -369,27 +542,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     };
   };
 
-  // Toggle mic mute state and broadcast
-  const handleToggleMic = () => {
-    const newMuted = !micMuted;
-    setMicMuted(newMuted);
-    if (socketRef.current && socketRef.current.connected) {
-      socketRef.current.emit('audio-state-change', {
-        micMuted: newMuted,
-        deafened: false
-      });
-    }
-    showToast(newMuted ? 'Microphone muted' : 'Microphone unmuted (Earshot broadcasting active)', 'info');
-  };
-
-  // Spawn local simulation peer for testing proximity (in-range or out-of-range)
+  // ====================================================
+  // 6. TEST BOT SPAWNER & SYNTHETIC AUDIO SIMULATION
+  // ====================================================
   const handleSpawnTestPeer = (forceOutOfRange = false) => {
     const fakeId = `test_bot_${Date.now()}`;
     const botColors = ['#f43f5e', '#06b6d4', '#10b981', '#f59e0b', '#8b5cf6'];
     const botColor = botColors[Math.floor(Math.random() * botColors.length)];
 
-    // If forceOutOfRange is true, spawn at 180px away (beyond 100px limit)
-    // Otherwise spawn within 65-85px (inside 100px limit)
     const distanceOffset = forceOutOfRange ? 160 : 70;
     const randomAngle = Math.random() * Math.PI * 2;
     const randomX = Math.round(posRef.current.x + Math.cos(randomAngle) * distanceOffset);
@@ -409,7 +569,8 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       y: randomY,
       targetX: randomX,
       targetY: randomY,
-      micMuted: false
+      micMuted: false,
+      isBot: true
     });
     setOnlineCount(peersRef.current.size + 1);
 
@@ -417,28 +578,92 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       showToast(`Spawned out-of-range peer (~160px). WebRTC offers will be blocked by backend gatekeeper!`, 'info');
     } else {
       showToast(`Spawned peer in earshot (~70px)! WebRTC offers permitted (100px limit).`, 'success');
-      // Test sending offer to this newly spawned peer to demonstrate gatekeeper
-      if (socketRef.current && socketRef.current.connected) {
-        socketRef.current.emit('webrtc-offer', {
-          targetSocketId: fakeId,
-          offer: { type: 'offer', sdp: 'v=0...' }
-        });
-      }
+      // Set test connected state for simulation
+      setPeerConnectionStates((prev) => ({ ...prev, [fakeId]: 'connected' }));
     }
   };
 
-  // Test sending a WebRTC offer through backend gatekeeper
-  const handleTestWebRTCOffer = (targetSocketId) => {
+  // Toggle synthetic audio tone from bot to test spatial audio attenuation
+  const toggleBotAudio = () => {
+    if (botAudioActive) {
+      stopBotAudio();
+      setBotAudioActive(false);
+      showToast('Bot spatial audio simulation stopped.', 'info');
+    } else {
+      startBotAudio();
+      setBotAudioActive(true);
+      showToast('Bot synthesizer voice active! Walk near/away from colleague to test volume attenuation.', 'success');
+    }
+  };
+
+  const startBotAudio = () => {
+    try {
+      const audioCtx = webrtcManagerRef.current?.getAudioContext();
+      if (!audioCtx) return;
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(440, audioCtx.currentTime); // 440 Hz A tone
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start();
+
+      botOscillatorRef.current = { osc, gain };
+    } catch (e) {
+      console.warn('Bot audio error:', e);
+    }
+  };
+
+  const stopBotAudio = () => {
+    if (botOscillatorRef.current) {
+      try {
+        botOscillatorRef.current.osc.stop();
+        botOscillatorRef.current.osc.disconnect();
+      } catch (e) {}
+      botOscillatorRef.current = null;
+    }
+  };
+
+  // Test sending a real WebRTC offer through backend gatekeeper
+  const handleTestWebRTCOffer = async (targetSocketId) => {
     if (!socketRef.current || !socketRef.current.connected) return;
     const target = peersRef.current.get(targetSocketId);
     showToast(`Transmitting WebRTC offer to ${target?.name || 'peer'} through backend gatekeeper...`, 'info');
-    socketRef.current.emit('webrtc-offer', {
-      targetSocketId,
-      offer: {
-        type: 'offer',
-        sdp: `v=0\r\no=ProxiSpeakTest ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudio\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111`
+
+    if (webrtcManagerRef.current) {
+      try {
+        webrtcManagerRef.current.createPeerConnection(targetSocketId, {
+          onIceCandidate: (candidate) => {
+            socketRef.current.emit('webrtc-ice-candidate', {
+              targetSocketId,
+              candidate
+            });
+          },
+          onConnectionStateChange: (state) => {
+            setPeerConnectionStates((prev) => ({ ...prev, [targetSocketId]: state }));
+          }
+        });
+
+        const offer = await webrtcManagerRef.current.createOffer(targetSocketId);
+        socketRef.current.emit('webrtc-offer', {
+          targetSocketId,
+          offer
+        });
+      } catch (e) {
+        console.warn('Failed real offer creation; sending diagnostic test offer:', e);
+        socketRef.current.emit('webrtc-offer', {
+          targetSocketId,
+          offer: {
+            type: 'offer',
+            sdp: `v=0\r\no=ProxiSpeakTest ${Date.now()} 2 IN IP4 127.0.0.1\r\ns=SpatialAudio\r\nt=0 0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111`
+          }
+        });
       }
-    });
+    }
   };
 
   // Fetch MongoDB $near proximity groups
@@ -470,7 +695,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   };
 
   // ====================================================
-  // 4. HIGH-PERFORMANCE 60 FPS CANVAS RENDERING LOOP
+  // 7. HIGH-PERFORMANCE 60 FPS CANVAS RENDERING LOOP
   // ====================================================
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -540,20 +765,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
 
       // --- D. DRAW DESKS & OBSTACLES ---
       obstacles.forEach((obs) => {
-        // Drop shadow
         ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
         ctx.fillRect(obs.x + 3, obs.y + 3, obs.width, obs.height);
 
-        // Desk body
         ctx.fillStyle = obs.color;
         ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
 
-        // Border
         ctx.strokeStyle = '#334155';
         ctx.lineWidth = 1.5;
         ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
 
-        // Desk label
         ctx.fillStyle = '#cbd5e1';
         ctx.font = '10px "Plus Jakarta Sans", sans-serif';
         ctx.textAlign = 'center';
@@ -570,56 +791,47 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       let ax = 0;
       let ay = 0;
 
-      // Keyboard input calculation
       if (keys.w || keys.arrowup) ay -= 1;
       if (keys.s || keys.arrowdown) ay += 1;
       if (keys.a || keys.arrowleft) ax -= 1;
       if (keys.d || keys.arrowright) ax += 1;
 
-      // Normalize diagonal keyboard velocity
       if (ax !== 0 && ay !== 0) {
         ax *= 0.7071;
         ay *= 0.7071;
       }
 
-      // Mouse waypoint navigation
       if (pos.targetX !== null && pos.targetY !== null && ax === 0 && ay === 0) {
         const dx = pos.targetX - pos.x;
         const dy = pos.targetY - pos.y;
         const distToTarget = Math.sqrt(dx * dx + dy * dy);
 
         if (distToTarget > 4) {
-          ax = (dx / distToTarget);
-          ay = (dy / distToTarget);
+          ax = dx / distToTarget;
+          ay = dy / distToTarget;
         } else {
-          // Arrived at target
           pos.targetX = null;
           pos.targetY = null;
           reticleRef.current = null;
         }
       }
 
-      // Apply acceleration & damping
       pos.vx = (pos.vx + ax * ACCELERATION) * FRICTION;
       pos.vy = (pos.vy + ay * ACCELERATION) * FRICTION;
 
-      // Clamp speed
       const speed = Math.sqrt(pos.vx * pos.vx + pos.vy * pos.vy);
       if (speed > MAX_SPEED) {
         pos.vx = (pos.vx / speed) * MAX_SPEED;
         pos.vy = (pos.vy / speed) * MAX_SPEED;
       }
 
-      // Next position candidate
       let nextX = pos.x + pos.vx;
       let nextY = pos.y + pos.vy;
 
-      // Boundary collision (world edges)
       const AVATAR_RADIUS = 16;
       nextX = Math.max(AVATAR_RADIUS + 8, Math.min(WORLD_WIDTH - AVATAR_RADIUS - 8, nextX));
       nextY = Math.max(AVATAR_RADIUS + 8, Math.min(WORLD_HEIGHT - AVATAR_RADIUS - 8, nextY));
 
-      // Obstacle collision resolution (soft pushout)
       obstacles.forEach((obs) => {
         const closestX = Math.max(obs.x, Math.min(nextX, obs.x + obs.width));
         const closestY = Math.max(obs.y, Math.min(nextY, obs.y + obs.height));
@@ -641,11 +853,10 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       pos.x = nextX;
       pos.y = nextY;
 
-      // Update state for UI display
       setCoords({ x: Math.round(pos.x), y: Math.round(pos.y) });
       setCurrentZone(getZoneAt(pos.x, pos.y));
 
-      // --- F. BROADCAST MOVEMENT VIA WEBSOCKET (Throttled ~35ms) ---
+      // Broadcast position update
       const isMoving = Math.abs(pos.vx) > 0.1 || Math.abs(pos.vy) > 0.1;
       const now = performance.now();
       if ((isMoving || (pos.targetX === null && lastEmitTime.current !== 0)) && now - lastEmitTime.current > 35) {
@@ -659,7 +870,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         lastEmitTime.current = isMoving ? now : 0;
       }
 
-      // --- G. DRAW MOUSE TARGET RIPPLE IF ACTIVE ---
+      // Draw mouse target ripple
       if (reticleRef.current) {
         const ret = reticleRef.current;
         ret.radius += 0.5;
@@ -671,7 +882,6 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           ctx.lineWidth = 2;
           ctx.stroke();
 
-          // Target center dot
           ctx.beginPath();
           ctx.arc(ret.x, ret.y, 2.5, 0, Math.PI * 2);
           ctx.fillStyle = `rgba(56, 189, 248, ${ret.opacity})`;
@@ -681,12 +891,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         }
       }
 
-      // --- H. CALCULATE EARSHOT PROXIMITY TO REMOTE PEERS ---
+      // Fetch live audio levels
+      const localAudioLevel = webrtcManagerRef.current?.getLocalAudioLevel() || 0;
+      const isLocalSpeaking = localAudioLevel > 0.05 && !micMuted;
+
+      // --- H. CALCULATE EARSHOT PROXIMITY & DRAW WEBRTC AUDIO BEAMS ---
       const activePeersInRadius = [];
       const peers = peersRef.current;
 
       peers.forEach((peer) => {
-        // Smooth linear interpolation (lerp) for remote peer movement
+        // Smooth lerp
         peer.x += (peer.targetX - peer.x) * 0.22;
         peer.y += (peer.targetY - peer.y) * 0.22;
 
@@ -694,66 +908,137 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         const dy = peer.y - pos.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
+        // Update WebRTC volume attenuation based on distance
+        if (webrtcManagerRef.current && !peer.isBot) {
+          webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, earshotRadius);
+        }
+
+        // Adjust bot synthesizer gain dynamically based on distance
+        if (peer.isBot && botOscillatorRef.current) {
+          const botGain = distance <= earshotRadius ? Math.max(0.01, (1 - distance / earshotRadius) * 0.08) : 0;
+          botOscillatorRef.current.gain.gain.setValueAtTime(botGain, webrtcManagerRef.current?.getAudioContext()?.currentTime || 0);
+        }
+
         if (distance <= earshotRadius) {
           const gain = Math.round((1 - distance / earshotRadius) * 100);
+          const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive ? 0.35 : 0);
+
           activePeersInRadius.push({
+            socketId: peer.socketId,
             name: peer.name,
             role: peer.role,
             distance: Math.round(distance),
-            gain: Math.max(10, Math.min(100, gain))
+            gain: Math.max(10, Math.min(100, gain)),
+            audioLevel: peerAudioLvl,
+            isSpeaking: peerAudioLvl > 0.05 && !peer.micMuted,
+            connectionState: peerConnectionStates[peer.socketId] || (peer.isBot ? 'connected' : 'connecting')
           });
 
-          // Draw active sound wave connection line between peers
-          ctx.beginPath();
-          ctx.moveTo(pos.x, pos.y);
-          ctx.lineTo(peer.x, peer.y);
-          ctx.strokeStyle = `rgba(16, 185, 129, ${0.35 + (gain / 100) * 0.45})`;
-          ctx.lineWidth = 2;
-          ctx.setLineDash([4, 4]);
-          ctx.stroke();
-          ctx.setLineDash([]);
+          // --- DYNAMIC WEBRTC ACOUSTIC SINE WAVE BEAM ---
+          // Vector perpendicular for sinusoidal undulating sound wave
+          const normalX = -dy / distance;
+          const normalY = dx / distance;
+          const segments = 32;
 
-          // Animated acoustic pulse ring at midpoint
+          ctx.beginPath();
+          for (let s = 0; s <= segments; s++) {
+            const t = s / segments;
+            const px = pos.x + dx * t;
+            const py = pos.y + dy * t;
+
+            // Amplitude increases when either peer or user speaks
+            const waveAmp = (4 + 10 * (localAudioLevel + peerAudioLvl)) * Math.sin(t * Math.PI);
+            const waveOffset = Math.sin(t * 14 - time * 6) * waveAmp;
+
+            const wx = px + normalX * waveOffset;
+            const wy = py + normalY * waveOffset;
+
+            if (s === 0) ctx.moveTo(wx, wy);
+            else ctx.lineTo(wx, wy);
+          }
+
+          const beamGrad = ctx.createLinearGradient(pos.x, pos.y, peer.x, peer.y);
+          beamGrad.addColorStop(0, `rgba(56, 189, 248, ${0.4 + (gain / 100) * 0.5})`);
+          beamGrad.addColorStop(0.5, `rgba(99, 102, 241, ${0.5 + (gain / 100) * 0.5})`);
+          beamGrad.addColorStop(1, `rgba(16, 185, 129, ${0.4 + (gain / 100) * 0.5})`);
+
+          ctx.strokeStyle = beamGrad;
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+
+          // Midpoint audio wave pulse circle
           const midX = (pos.x + peer.x) / 2;
           const midY = (pos.y + peer.y) / 2;
-          const waveRadius = (time * 18) % 28;
+          const pulseRadius = (time * 18) % 24;
+
           ctx.beginPath();
-          ctx.arc(midX, midY, waveRadius, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(56, 189, 248, ${0.6 - waveRadius / 28})`;
+          ctx.arc(midX, midY, pulseRadius, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(56, 189, 248, ${0.7 - pulseRadius / 24})`;
           ctx.lineWidth = 1.5;
           ctx.stroke();
+
+          // Sleek floating WebRTC Audio badge at midpoint
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.beginPath();
+          ctx.roundRect(midX - 45, midY - 10, 90, 20, 6);
+          ctx.fill();
+          ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+
+          ctx.fillStyle = '#38bdf8';
+          ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`🎙️ ${gain}% • ${Math.round(distance)}px`, midX, midY + 3.5);
         }
       });
 
       setPeersInEarshot(activePeersInRadius);
 
-      // --- I. DRAW USER'S EARSHOT PROXIMITY RADIUS ---
+      // --- I. DRAW EARSHOT PROXIMITY RADIUS ---
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, earshotRadius, 0, Math.PI * 2);
-      ctx.strokeStyle = activePeersInRadius.length > 0 ? 'rgba(16, 185, 129, 0.45)' : 'rgba(99, 102, 241, 0.25)';
+      ctx.strokeStyle = activePeersInRadius.length > 0 ? 'rgba(16, 185, 129, 0.5)' : 'rgba(99, 102, 241, 0.25)';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 5]);
       ctx.stroke();
       ctx.setLineDash([]);
 
-      ctx.fillStyle = activePeersInRadius.length > 0 ? 'rgba(16, 185, 129, 0.05)' : 'rgba(99, 102, 241, 0.03)';
+      ctx.fillStyle = activePeersInRadius.length > 0 ? 'rgba(16, 185, 129, 0.06)' : 'rgba(99, 102, 241, 0.03)';
       ctx.fill();
 
       // --- J. DRAW REMOTE PEER AVATARS ---
       peers.forEach((peer) => {
+        const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive ? 0.35 : 0);
+        const isPeerSpeaking = peerAudioLvl > 0.05 && !peer.micMuted;
+        const isConnected = peerConnectionStates[peer.socketId] === 'connected' || (peer.isBot && botAudioActive);
+
+        // Acoustic speech ripples when peer speaks
+        if (isPeerSpeaking) {
+          for (let r = 1; r <= 2; r++) {
+            const rippleR = AVATAR_RADIUS + ((time * 22 + r * 12) % 24);
+            const rippleAlpha = Math.max(0, 0.6 - (rippleR - AVATAR_RADIUS) / 24);
+            ctx.beginPath();
+            ctx.arc(peer.x, peer.y, rippleR, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(52, 211, 153, ${rippleAlpha})`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+          }
+        }
+
         // Shadow
         ctx.beginPath();
         ctx.arc(peer.x + 2, peer.y + 2, AVATAR_RADIUS, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
         ctx.fill();
 
-        // Avatar body
+        // Body
         ctx.beginPath();
         ctx.arc(peer.x, peer.y, AVATAR_RADIUS, 0, Math.PI * 2);
         ctx.fillStyle = peer.avatarColor || '#10b981';
         ctx.fill();
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
+        ctx.strokeStyle = isPeerSpeaking ? '#34d399' : '#ffffff';
+        ctx.lineWidth = isPeerSpeaking ? 3 : 2;
         ctx.stroke();
 
         // Initial letter
@@ -761,6 +1046,28 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         ctx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
         ctx.textAlign = 'center';
         ctx.fillText((peer.name || 'U').charAt(0).toUpperCase(), peer.x, peer.y + 4);
+
+        // Animated speech equalizer icon above avatar if speaking
+        if (isPeerSpeaking) {
+          const eqX = peer.x - 8;
+          const eqY = peer.y - 24;
+          for (let b = 0; b < 3; b++) {
+            const barH = 4 + Math.abs(Math.sin(time * 8 + b * 2)) * 8;
+            ctx.fillStyle = '#34d399';
+            ctx.fillRect(eqX + b * 6, eqY - barH, 4, barH);
+          }
+        }
+
+        // WebRTC audio mesh badge
+        if (isConnected) {
+          ctx.beginPath();
+          ctx.arc(peer.x + 13, peer.y - 12, 5, 0, Math.PI * 2);
+          ctx.fillStyle = '#10b981';
+          ctx.fill();
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 1;
+          ctx.stroke();
+        }
 
         // Name tag & role
         ctx.fillStyle = '#f8fafc';
@@ -773,13 +1080,25 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       });
 
       // --- K. DRAW LOCAL USER AVATAR ---
-      // Outer pulse ring
-      const pulse = 3 * Math.sin(time * 3);
-      ctx.beginPath();
-      ctx.arc(pos.x, pos.y, AVATAR_RADIUS + 3 + pulse, 0, Math.PI * 2);
-      ctx.strokeStyle = `${user?.avatarColor || '#6366f1'}66`;
-      ctx.lineWidth = 2;
-      ctx.stroke();
+      // Voice acoustic emission ripples
+      if (isLocalSpeaking) {
+        for (let r = 1; r <= 3; r++) {
+          const rippleR = AVATAR_RADIUS + ((time * 26 + r * 14) % 32);
+          const rippleAlpha = Math.max(0, 0.7 - (rippleR - AVATAR_RADIUS) / 32);
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, rippleR, 0, Math.PI * 2);
+          ctx.strokeStyle = `rgba(56, 189, 248, ${rippleAlpha})`;
+          ctx.lineWidth = 2.5;
+          ctx.stroke();
+        }
+      } else {
+        const pulse = 3 * Math.sin(time * 3);
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, AVATAR_RADIUS + 3 + pulse, 0, Math.PI * 2);
+        ctx.strokeStyle = `${user?.avatarColor || '#6366f1'}66`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
 
       // Shadow
       ctx.beginPath();
@@ -792,8 +1111,8 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       ctx.arc(pos.x, pos.y, AVATAR_RADIUS, 0, Math.PI * 2);
       ctx.fillStyle = user?.avatarColor || '#6366f1';
       ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2.5;
+      ctx.strokeStyle = isLocalSpeaking ? '#38bdf8' : '#ffffff';
+      ctx.lineWidth = isLocalSpeaking ? 3 : 2.5;
       ctx.stroke();
 
       // Initial
@@ -812,10 +1131,18 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       ctx.fillText(`YOU (${user?.role || 'Developer'})`, pos.x, pos.y - 14);
 
       // Microphone status icon indicator
-      if (micMuted) {
+      if (micMuted || !isMicActive) {
         ctx.beginPath();
         ctx.arc(pos.x + 12, pos.y - 12, 6, 0, Math.PI * 2);
         ctx.fillStyle = '#f43f5e';
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      } else if (isMicActive) {
+        ctx.beginPath();
+        ctx.arc(pos.x + 12, pos.y - 12, 6, 0, Math.PI * 2);
+        ctx.fillStyle = '#10b981';
         ctx.fill();
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1;
@@ -830,7 +1157,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [earshotRadius, micMuted, user]);
+  }, [earshotRadius, micMuted, isMicActive, user, peerConnectionStates, botAudioActive]);
 
   return (
     <div className="w-full max-w-6xl mx-auto flex flex-col gap-4">
@@ -844,8 +1171,8 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
               <h2 className="text-sm sm:text-base font-extrabold text-white truncate">ProxiSpeak Virtual Office</h2>
-              <span className="text-[9px] sm:text-[10px] font-mono px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 border border-cyan-500/30 whitespace-nowrap">
-                Week 1: Canvas & WebSockets
+              <span className="text-[9px] sm:text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 whitespace-nowrap">
+                Week 2: WebRTC Audio Mesh
               </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 mt-0.5">
@@ -906,13 +1233,23 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
               title="Spawn test avatar outside 100px earshot (Demonstrates server gatekeeper blocking offers)"
             >
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
-              <span>Spawn Far (>100px)</span>
+              <span>Spawn Far (&gt;100px)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsDiagnosticsOpen(true)}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-750 text-cyan-300 border border-slate-700 text-[11px] sm:text-xs font-medium flex items-center space-x-1 cursor-pointer transition-colors"
+              title="Open WebRTC Audio Diagnostics"
+            >
+              <Wrench className="w-3.5 h-3.5" />
+              <span>Diagnostics</span>
             </button>
 
             <button
               type="button"
               onClick={handleResetPosition}
-              className="p-1.5 sm:p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 cursor-pointer transition-colors"
+              className="p-1.5 sm:p-2 rounded-xl bg-slate-800 hover:bg-slate-750 text-slate-300 hover:text-white border border-slate-700 cursor-pointer transition-colors"
               title="Center Avatar"
             >
               <RotateCcw className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
@@ -928,6 +1265,33 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           </div>
         </div>
       </div>
+
+      {/* Microphone Permission Banner if not yet active */}
+      {!isMicActive && (
+        <div className="bg-gradient-to-r from-indigo-950/90 via-slate-900 to-indigo-950/90 border border-indigo-500/40 rounded-2xl p-3 sm:p-4 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-fadeIn">
+          <div className="flex items-center space-x-3 text-center sm:text-left">
+            <div className="p-2 rounded-xl bg-indigo-500/20 text-indigo-300 shrink-0">
+              <Headphones className="w-5 h-5 animate-pulse" />
+            </div>
+            <div>
+              <h3 className="text-xs sm:text-sm font-bold text-white">
+                WebRTC Peer-to-Peer Spatial Audio Ready
+              </h3>
+              <p className="text-[11px] text-slate-300">
+                Grant microphone access using <code className="text-cyan-300 font-mono">getUserMedia</code> to automatically talk with teammates whenever you step within 100 pixels!
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleInitMicrophone}
+            className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-xs flex items-center space-x-2 shadow-lg shadow-indigo-600/30 cursor-pointer transition-all shrink-0"
+          >
+            <Mic className="w-4 h-4 text-cyan-300" />
+            <span>Enable Microphone</span>
+          </button>
+        </div>
+      )}
 
       {/* Main 2D Canvas Container */}
       <div className="relative rounded-2xl sm:rounded-3xl overflow-hidden border border-slate-800/90 shadow-2xl bg-slate-950 group">
@@ -948,7 +1312,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
                 2D HTML5 Canvas World
               </span>
               <span className="text-[9px] sm:text-[10px] text-cyan-300 font-mono truncate block">
-                WebRTC Gatekeeper: 100px Radius Limit
+                WebRTC Mesh Gatekeeper: 100px Limit
               </span>
             </div>
           </div>
@@ -958,19 +1322,22 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             <div className="bg-emerald-950/90 backdrop-blur-md px-2.5 sm:px-3.5 py-2 sm:py-2.5 rounded-xl border border-emerald-500/40 text-xs shadow-xl animate-fadeIn pointer-events-auto">
               <div className="flex items-center space-x-1.5 sm:space-x-2 text-emerald-400 font-bold mb-1 text-[11px] sm:text-xs">
                 <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-bounce shrink-0" />
-                <span>Within 100px Earshot ({peersInEarshot.length})</span>
+                <span>In 100px Earshot ({peersInEarshot.length})</span>
               </div>
               {peersInEarshot.map((peer, idx) => (
                 <div key={idx} className="text-[10px] sm:text-[11px] text-emerald-200/90 font-mono flex items-center justify-between gap-2 py-0.5">
                   <span className="truncate">{peer.name}:</span>
                   <div className="flex items-center space-x-1.5 shrink-0">
                     <span className="text-emerald-400 font-bold">{peer.gain}% ({peer.distance}px)</span>
+                    <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-900/80 text-emerald-300 font-mono">
+                      {peer.connectionState === 'connected' ? 'Live Audio' : 'Connecting'}
+                    </span>
                     {peer.socketId && (
                       <button
                         type="button"
                         onClick={() => handleTestWebRTCOffer(peer.socketId)}
-                        className="px-1.5 py-0.5 rounded bg-emerald-900/80 hover:bg-emerald-800 text-[9px] text-emerald-200 border border-emerald-600/40 cursor-pointer"
-                        title="Test WebRTC offer delivery through backend"
+                        className="px-1.5 py-0.5 rounded bg-indigo-900/80 hover:bg-indigo-800 text-[9px] text-indigo-200 border border-indigo-600/40 cursor-pointer"
+                        title="Dispatch WebRTC offer through backend"
                       >
                         Signal
                       </button>
@@ -981,7 +1348,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             </div>
           ) : (
             <div className="bg-slate-900/80 backdrop-blur-md px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border border-slate-800 text-[10px] sm:text-[11px] text-slate-400 font-mono">
-              🎧 No colleagues within 100px earshot
+              🎧 Walk within 100px of a teammate to chat
             </div>
           )}
         </div>
@@ -993,13 +1360,32 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             type="button"
             onClick={handleToggleMic}
             className={`p-1.5 sm:p-2 rounded-xl border cursor-pointer transition-all flex items-center space-x-1.5 ${
-              micMuted
+              micMuted || !isMicActive
                 ? 'bg-rose-950/60 border-rose-500/50 text-rose-300 hover:bg-rose-900/60'
                 : 'bg-emerald-950/60 border-emerald-500/50 text-emerald-300 hover:bg-emerald-900/60'
             }`}
           >
-            {micMuted ? <MicOff className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Mic className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
-            <span className="text-[11px] sm:text-xs font-semibold">{micMuted ? 'Muted' : 'Speaking'}</span>
+            {micMuted || !isMicActive ? <MicOff className="w-3.5 h-3.5 sm:w-4 sm:h-4" /> : <Mic className="w-3.5 h-3.5 sm:w-4 sm:h-4" />}
+            <span className="text-[11px] sm:text-xs font-semibold">
+              {!isMicActive ? 'Mic Inactive' : micMuted ? 'Muted' : 'Speaking'}
+            </span>
+          </button>
+
+          {/* Bot Audio Simulation Toggle (For single-browser testing) */}
+          <button
+            type="button"
+            onClick={toggleBotAudio}
+            className={`p-1.5 sm:p-2 rounded-xl border cursor-pointer transition-all flex items-center space-x-1.5 ${
+              botAudioActive
+                ? 'bg-indigo-950/70 border-indigo-500/50 text-indigo-300 animate-pulse'
+                : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+            }`}
+            title="Toggle synthetic voice tone on spawned bot to test spatial distance attenuation"
+          >
+            <Headphones className="w-3.5 h-3.5" />
+            <span className="text-[11px] sm:text-xs font-medium">
+              {botAudioActive ? 'Bot Audio ON' : 'Bot Audio'}
+            </span>
           </button>
 
           {/* WebRTC Limit Badge */}
@@ -1010,7 +1396,17 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         </div>
       </div>
 
-      {/* Movement Instructions & Multi-Tab Testing Pill */}
+      {/* HTML5 Canvas Real-Time WebRTC Audio Waveform Visualizer */}
+      <AudioWaveformVisualizer
+        webrtcManager={webrtcManagerRef.current}
+        isMicActive={isMicActive}
+        isMicMuted={micMuted}
+        onToggleMic={handleToggleMic}
+        onInitMic={handleInitMicrophone}
+        connectedPeersCount={peersInEarshot.length}
+      />
+
+      {/* Instructions & Multi-Client Testing Pill */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         {/* Navigation Instructions */}
         <div className="p-3.5 rounded-2xl bg-slate-900/70 border border-slate-800/80 flex items-center space-x-3 text-xs text-slate-300">
@@ -1020,7 +1416,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           <div>
             <span className="font-semibold text-white block">100-Pixel WebRTC Audio Mesh:</span>
             <span className="text-slate-400 text-[11px]">
-              The Node.js server strictly verifies distance before routing WebRTC offers & answers. Walk within <strong className="text-cyan-300">100 pixels</strong> of a teammate to open bidirectional audio!
+              The Node.js server strictly verifies distance before routing WebRTC offers & answers. Walk within <strong className="text-cyan-300">100 pixels</strong> of a teammate to open bidirectional Opus audio!
             </span>
           </div>
         </div>
@@ -1031,16 +1427,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             <ExternalLink className="w-4 h-4" />
           </div>
           <div className="flex-1">
-            <span className="font-semibold text-white block">Real-time Multi-Client Testing:</span>
+            <span className="font-semibold text-white block">Dual-Browser Tab Testing:</span>
             <span className="text-slate-400 text-[11px]">
-              Open a second browser tab at <code className="text-indigo-300 font-mono">http://localhost:3000</code> to watch both avatars move, enter the 100px radius, and connect audio!
+              Open a second browser tab at <code className="text-indigo-300 font-mono">http://localhost:3000</code> to watch both avatars move, enter the 100px radius, and connect two-way peer audio!
             </span>
           </div>
         </div>
       </div>
 
       {/* ====================================================
-          5. MONGODB $near PROXIMITY GROUPS MODAL
+          8. MONGODB $near PROXIMITY GROUPS MODAL
          ==================================================== */}
       {isGroupsModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
@@ -1127,6 +1523,113 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
                 className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold rounded-xl text-xs transition-colors cursor-pointer"
               >
                 Refresh Groups
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ====================================================
+          9. WEBRTC DIAGNOSTICS & AUDIO MESH MODAL
+         ==================================================== */}
+      {isDiagnosticsOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-fadeIn">
+          <div className="relative w-full max-w-lg bg-slate-900 border border-slate-800 rounded-3xl p-6 shadow-2xl">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-4 border-b border-slate-800">
+              <div className="flex items-center space-x-2.5">
+                <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400">
+                  <Wrench className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">WebRTC Audio Mesh Diagnostics</h3>
+                  <p className="text-[11px] text-slate-400">
+                    Peer-to-peer audio connection parameters & STUN diagnostics
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDiagnosticsOpen(false)}
+                className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Diagnostics Stats */}
+            <div className="my-4 space-y-3">
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Local Media</span>
+                  <span className="text-white font-bold block mt-1">
+                    {isMicActive ? (micMuted ? 'Muted' : 'Live Stream') : 'Not Initialized'}
+                  </span>
+                  <span className="text-[10px] text-cyan-400 font-mono">getUserMedia Opus 48kHz</span>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Proximity Gatekeeper</span>
+                  <span className="text-emerald-400 font-bold block mt-1">Strict 100px Radius</span>
+                  <span className="text-[10px] text-slate-400 font-mono">Server Enforced</span>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">STUN Servers</span>
+                  <span className="text-indigo-300 font-mono text-[11px] block mt-1 truncate">
+                    stun.l.google.com:19302
+                  </span>
+                  <span className="text-[10px] text-emerald-400 font-mono">NAT Traversal Ready</span>
+                </div>
+
+                <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                  <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Active P2P Meshes</span>
+                  <span className="text-white font-bold block mt-1">
+                    {peersInEarshot.length} {peersInEarshot.length === 1 ? 'Peer' : 'Peers'} in Range
+                  </span>
+                  <span className="text-[10px] text-cyan-400 font-mono">
+                    Dynamic Gain Attenuation
+                  </span>
+                </div>
+              </div>
+
+              {/* Connected Peers Table */}
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                <h4 className="text-[11px] font-bold text-slate-300 mb-2">Connected Peers & Gain Attenuation:</h4>
+                {peersInEarshot.length > 0 ? (
+                  <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+                    {peersInEarshot.map((peer, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-2 rounded-lg bg-slate-900 border border-slate-800/80 text-xs">
+                        <div className="flex items-center space-x-2">
+                          <span className={`w-2 h-2 rounded-full ${peer.connectionState === 'connected' ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+                          <span className="text-white font-medium">{peer.name}</span>
+                        </div>
+                        <div className="flex items-center space-x-2 font-mono text-[11px]">
+                          <span className="text-cyan-300">{peer.distance}px</span>
+                          <span className="text-emerald-400 font-bold">{peer.gain}% Gain</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500 italic py-2 text-center">
+                    No peer avatars within 100px earshot. Spawn a near peer or open a second browser window to inspect.
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+              <span className="text-slate-400 text-[11px]">
+                Web Audio API Attenuation: <strong className="text-cyan-300">Active</strong>
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsDiagnosticsOpen(false)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-750 text-white font-semibold rounded-xl text-xs transition-colors cursor-pointer"
+              >
+                Close
               </button>
             </div>
           </div>

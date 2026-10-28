@@ -24,7 +24,7 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
 | Week | Backend (Node.js, Express, Socket.io, MongoDB) | Frontend (React, WebRTC, Canvas API) | Status |
 |:---:|---|---|:---:|
 | **Week 1** | **Signaling & Movement:** Build WebSocket server to broadcast avatar $X/Y$ coordinates. Setup basic MongoDB geospatial schemas. | **World Rendering:** Build the React Canvas layer. Implement smooth keyboard/mouse avatar movement and coordinate broadcasting. | **✅ COMPLETED** |
-| **Week 2** | **Proximity Calculations:** Implement MongoDB `$near` queries to group users. Logic to only send WebRTC offer/answers to users within a 100-pixel radius. | **WebRTC Integration:** Implement standard WebRTC peer-to-peer audio connections using browser `getUserMedia`. | ⏳ Next |
+| **Week 2** | **Proximity Calculations:** Implement MongoDB `$near` queries to group users. Logic to only send WebRTC offer/answers to users within a 100-pixel radius. | **WebRTC Integration:** Implement standard WebRTC peer-to-peer audio connections using browser `getUserMedia`. | **✅ COMPLETED** |
 | **Mid-Project Review** | **Spatial Audit:** Prove backend accurately filters and clusters users based on geospatial coordinates under 20ms. | **Audio Check:** Demonstrate two browsers successfully establishing a WebRTC audio connection via the signaling server. | ⏳ Planned |
 | **Week 3** | **Mesh Scaling:** Optimize WebRTC mesh network. Implement Redis Pub/Sub to allow scaling Socket.io across multiple Node instances. | **Dynamic Attenuation:** Hook WebRTC audio tracks into Web Audio API. Write algorithms to calculate volume drop-off based on pixel distance. | ⏳ Planned |
 | **Week 4** | **Room Persistence:** Save office layouts and furniture obstacles (which block sound) into MongoDB. | **Refine & Polish:** Add 3D audio panning (stereo separation). Ensure Canvas animations render at a steady 60 FPS. | ⏳ Planned |
@@ -91,7 +91,56 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
 
 ---
 
-## 🗄️ 4. MongoDB Database & Compass Integration (`proxify`)
+## 🔊 4. Week 2 Deliverables: Proximity Calculations & WebRTC 100-Pixel Gatekeeper
+
+### 🧭 1. Native MongoDB `$near` Geospatial Grouping (`backend/models/User.js`)
+- **2D Planar Cartesian Indexing:** Avatars are mapped on a canvas pixel grid `[X, Y]` indexed via `userSchema.index({ location: '2d' })`.
+- **`User.findNearby(x, y, maxDistance = 100)`:** Uses native MongoDB `$near` to retrieve ranked nearby peers within the 100-pixel earshot limit, computing exact Euclidean distance $d = \sqrt{\Delta x^2 + \Delta y^2}$, acoustic attenuation gain ($10\% - 100\%$), and WebRTC eligibility.
+- **Iterative Audio Pod Clustering (`User.groupUsersByProximity(radius = 100)`):**
+  - Clusters unvisited users within a 100px radius into discrete audio groups (`pod-1`, `pod-2`, ...).
+  - Calculates dynamic geometric centroids $\bar{C} = \left(\frac{\sum x}{n}, \frac{\sum y}{n}\right)$.
+  - Designates pod leaders and isolates avatars $> 100\text{px}$ away into a `soloUsers` list with WebRTC restrictions.
+
+### 🛡️ 2. Strict WebRTC 100-Pixel Radius Gatekeeper (`backend/sockets/signaling.js`)
+- **Backend Distance Verification:** Server computes real-time Euclidean distance between sender and recipient coordinates before forwarding any WebRTC packet.
+- **Offer/Answer Relay Gatekeeper:**
+  - $\mathbf{d \le 100\text{px}}$: **ACCEPTED.** Server forwards `webrtc-offer` / `webrtc-answer` to the target peer with enriched proximity metadata (`distance`, `maxRadius: 100`, `gain`, `inRange: true`).
+  - $\mathbf{d > 100\text{px}}$: **BLOCKED.** Server immediately drops the signaling packet and emits `webrtc-signal-rejected` to the caller with `reason: 'OUT_OF_PROXIMITY_RANGE'`, distance, and descriptive message.
+- **ICE Candidate Gatekeeper:** Drops `webrtc-ice-candidate` packets if distance between peers exceeds 100px.
+- **Dynamic Proximity Boundary Transitions (`avatar-move`):**
+  - `proximity-peer-entered`: Emitted when two avatars cross inside $\le 100\text{px}$. Includes glare prevention logic (`socket.id < peerSocketId` initiates offer).
+  - `proximity-peer-left`: Emitted when avatars drift beyond $> 100\text{px}$, prompting the client to close the WebRTC peer connection.
+
+### 🎛️ 3. Frontend Interactive Proximity Testing (`VirtualOfficeWorld.jsx`)
+- **`$near Groups` Modal:** Live inspection modal fetching and rendering MongoDB `$near` audio pods, member lists, centroids, and solitary avatars.
+- **Dual Test Spawners:**
+  - `Spawn Near (~70px)`: Places a peer within the 100px earshot zone (WebRTC signaling allowed).
+  - `Spawn Far (>100px)`: Places a peer at 160px (WebRTC signaling blocked by server gatekeeper).
+- **Manual Signal Button:** Dispatches test WebRTC offers with visual toast alerts showing server approval or rejection.
+
+### 🎙️ 4. Standard WebRTC P2P Audio Integration via `getUserMedia` (`webrtcManager.js`)
+- **Browser Audio Capture:** Requests microphone stream via `navigator.mediaDevices.getUserMedia` with high-fidelity acoustic constraints (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`, `channelCount: 1`).
+- **WebRTC PeerConnection Lifecycle:**
+  - Standard Google STUN servers (`stun.l.google.com:19302`).
+  - Attaches local audio tracks to `RTCPeerConnection`.
+  - Full handshake flow: `createOffer()`, `setLocalDescription()`, `setRemoteDescription()`, `createAnswer()`, and ICE candidate trickling.
+  - Queues early ICE candidates and flushes them automatically once remote descriptions are set.
+- **Dynamic Distance-Based Audio Attenuation:**
+  - Distance $\le 100\text{px}$: Gain smoothly scales from $100\%$ at close proximity down to $10\%$ at the 100px boundary.
+  - Distance $> 100\text{px}$: Audio channel closes and resets volume to $0\%$.
+- **HTML5 Canvas Real-Time Audio Visualizer (`AudioWaveformVisualizer.jsx`):**
+  - **Oscilloscope Waveform:** 60 FPS time-domain wave render with neon gradient (`#38bdf8` -> `#818cf8` -> `#f472b6`).
+  - **FFT Spectrum Analyzer:** 32-band frequency equalizer bars bouncing in sync with human voice fundamentals.
+  - **VU Decibel Meter:** Real-time volume level display in decibels (-60 dB to 0 dB) with speech detection flags.
+  - **Interactive Loopback Self-Test:** In-browser WebRTC loopback test (`pc1 <-> pc2`) allowing developers to test microphone input, playback, and visualizer without needing a second participant.
+- **Canvas World Acoustic Features:**
+  - **Voice Acoustic Emission Rings:** Avatars emit pulsating shockwaves on the canvas when speaking.
+  - **Acoustic Sine Wave Beam:** Fluid undulating sound wave connecting avatars within 100px earshot.
+  - **Speech Equalizers:** Animated 3-bar speech equalizer above avatars actively speaking.
+
+---
+
+## 🗄️ 5. MongoDB Database & Compass Integration (`proxify`)
 
 The application connects to your local MongoDB server on port `27017` using the **`proxify`** database:
 - **Connection URI:** `mongodb://localhost:27017/proxify`
@@ -103,12 +152,12 @@ The application connects to your local MongoDB server on port `27017` using the 
 
 ---
 
-## 📁 5. Clean Project Structure
+## 📁 6. Clean Project Structure
 
 ```
 project_2/
 ├── package.json              # Workspace root scripts
-├── README.md                 # Complete project documentation
+├── readme.md                 # Complete project documentation
 │
 ├── frontend/                 # 🌐 React, WebRTC, Canvas API
 │   ├── index.html            # Entry HTML & Plus Jakarta Sans typography
@@ -120,13 +169,17 @@ project_2/
 │       ├── App.jsx           # Main controller & view transition manager
 │       ├── main.jsx          # React DOM root entry
 │       ├── index.css         # Tailwind styles & radar pulse keyframes
+│       ├── utils/
+│       │   └── webrtcManager.js         # WebRTC P2P manager, getUserMedia, Web Audio API & loopback
 │       └── components/
-│           ├── VirtualOfficeWorld.jsx   # 2D Canvas Layer, smooth movement & socket sync
+│           ├── VirtualOfficeWorld.jsx   # 2D Canvas Layer, 100px proximity gatekeeper & pods
+│           ├── AudioWaveformVisualizer.jsx # HTML5 Canvas audio oscilloscope & FFT spectrum visualizer
 │           ├── Navbar.jsx               # Infotact branding & world switcher
-│           ├── LoginPage.jsx            # Sign-in form with 1-click demo logins
+│           ├── LoginPage.jsx            # Sign-in form with Gmail & Social OAuth
 │           ├── SignUpPage.jsx           # Avatar registration with live color picker
 │           ├── ProximityRadarPreview.jsx# 2D Canvas spatial audio proximity engine
 │           ├── SessionDashboard.jsx     # Post-login authenticated status card
+│           ├── SocialAuthModal.jsx      # Google & Facebook authentication dialogs
 │           └── ForgotPasswordModal.jsx  # Password recovery dialog
 │
 └── backend/                  # ⚙️ Node.js, Express, Socket.io, MongoDB
@@ -135,20 +188,20 @@ project_2/
     ├── .env                  # PORT=5000 & MONGODB_URI=mongodb://localhost:27017/proxify
     ├── node_modules/         # Backend dependencies
     ├── sockets/
-    │   └── signaling.js      # WebSocket signaling server & coordinate broadcasting
+    │   └── signaling.js      # Strict 100px WebRTC gatekeeper & real-time movement
     ├── models/
-    │   ├── User.js           # Mongoose model with 2D planar geospatial index & $near helpers
+    │   ├── User.js           # 2D Cartesian index, $near helpers & audio pod clustering
     │   └── OfficeSpace.js    # 2D office layout zones and obstacles schema
     ├── middleware/
     │   └── auth.js           # JWT authentication middleware
     └── routes/
-        ├── auth.js           # Register, Login, Me, Demo accounts endpoints
-        └── spatial.js        # Geospatial $near queries and office world API
+        ├── auth.js           # Gmail-only auth, Google/Facebook OAuth endpoints
+        └── spatial.js        # Proximity pods, $near queries & 100px verification
 ```
 
 ---
 
-## 🔌 6. Socket.io & API Specifications
+## 🔌 7. Socket.io & API Specifications
 
 ### Socket.io Events Reference
 | Event Name | Direction | Payload | Description |
@@ -159,22 +212,30 @@ project_2/
 | `avatar-move` | Client ➔ Server | `{ x, y, isMoving }` | Broadcasts avatar coordinate changes |
 | `user-moved` | Server ➔ Peers | `{ socketId, userId, location: [x, y], isMoving }` | Relays peer position with smooth lerp |
 | `audio-state-change` | Client ➔ Server | `{ micMuted, deafened }` | Broadcasts microphone status |
-| `webrtc-offer` | Bidirectional | `{ targetSocketId, callerSocketId, offer }` | Relays WebRTC SDP offer |
-| `webrtc-answer` | Bidirectional | `{ targetSocketId, calleeSocketId, answer }` | Relays WebRTC SDP answer |
-| `webrtc-ice-candidate` | Bidirectional | `{ targetSocketId, candidate }` | Relays WebRTC ICE candidate |
+| `proximity-peer-entered` | Server ➔ Peer | `{ peerSocketId, peerUser, distance, shouldInitiateOffer }` | Fired when distance $\le 100\text{px}$; triggers WebRTC handshake |
+| `proximity-peer-left` | Server ➔ Peer | `{ peerSocketId, distance, reason }` | Fired when distance $> 100\text{px}$; triggers WebRTC audio teardown |
+| `webrtc-offer` | Bidirectional | `{ targetSocketId, offer }` | **Gatekeeper:** Routed only if $d \le 100\text{px}$; otherwise rejected |
+| `webrtc-answer` | Bidirectional | `{ targetSocketId, answer }` | **Gatekeeper:** Routed only if $d \le 100\text{px}$; otherwise rejected |
+| `webrtc-ice-candidate`| Bidirectional | `{ targetSocketId, candidate }` | **Gatekeeper:** Relayed only if $d \le 100\text{px}$ |
+| `webrtc-signal-rejected`| Server ➔ Caller| `{ type, targetSocketId, distance, maxRadius, reason, message }` | Emitted when signaling blocked due to distance $> 100\text{px}$ |
+| `get-proximity-groups`| Client ➔ Server| `{ radius }` | Requests live MongoDB `$near` clustering computation |
+| `proximity-groups-updated`| Server ➔ Client| `{ clusters, soloUsers, totalClusters, totalUsers }` | Broadcasts updated proximity audio pods |
 | `user-left` | Server ➔ Peers | `{ socketId, userId, name }` | Cleans up avatar when disconnected |
 
 ### REST Endpoints
 - `GET /api/health` — Probes backend status, MongoDB connection, and active modules.
+- `GET /api/spatial/groups?radius=100` — Computes and returns MongoDB `$near` audio pods and centroids.
+- `POST /api/spatial/verify-proximity` — Verifies two sets of coordinates against the 100-pixel WebRTC gatekeeper limit (`fromCoords`, `toCoords`).
+- `GET /api/spatial/nearby?x=...&y=...&radius=100` — Executes native MongoDB `$near` query returning avatars within radius with WebRTC range status.
 - `GET /api/spatial/room` — Returns office dimensions, zones, and obstacles.
-- `GET /api/spatial/nearby?x=...&y=...&radius=...` — Executes native MongoDB `$near` query.
-- `POST /api/auth/register` — Registers a new user with spatial avatar preferences.
+- `POST /api/auth/register` — Registers a new user with spatial avatar preferences (Gmail required).
 - `POST /api/auth/login` — Authenticates credentials and issues a JWT token.
+- `POST /api/auth/social-login` — Authenticates via Google or Facebook OAuth credentials.
 - `GET /api/auth/me` — Protected endpoint returning current authenticated profile.
 
 ---
 
-## 🏃 7. Running the Application
+## 🏃 8. Running the Application
 
 ### 1. Start Frontend (React + Vite)
 ```bash
@@ -198,26 +259,36 @@ npm run backend
 
 ---
 
-## 🧪 8. How to Test Week 1 Deliverables
+## 🧪 9. How to Test Proximity Calculations & WebRTC Gatekeeper
 
-1. Open **[http://localhost:3000](http://localhost:3000)** in your browser.
-2. Click **"Guest World"** in the top navigation, or sign in using any 1-click demo account (*Dr. Aris Thorne*, *Priya Sharma*, or *Rohan Mehta*) and click **"Launch Virtual Office"**.
-3. **Smooth Keyboard Movement:**
-   - Press **W, A, S, D** or **Arrow Keys** to glide your avatar across the office floor.
-   - Note the smooth acceleration and friction physics!
-4. **Mouse Click Navigation:**
-   - Click anywhere on the office floor; a targeting reticle appears and your avatar smoothly walks to that coordinate.
-5. **Multi-Client Real-Time Synchronization:**
-   - Open a **second browser tab** at [http://localhost:3000](http://localhost:3000).
-   - Move your avatar in one tab and watch it move smoothly in real time in the other tab!
-6. **Acoustic Earshot Proximity Testing:**
-   - Walk within 130px of another avatar:
-     - Notice the green acoustic connection beam and sound wave ripples linking both avatars.
-     - Look at the live status card showing pixel distance and dynamic Web Audio gain percentage!
-   - Or click **"Spawn Peer Bot"** inside the canvas to spawn simulated colleagues near you.
-7. **MongoDB Geospatial Query Test:**
+### A. Testing the Strict 100-Pixel Radius WebRTC Gatekeeper
+1. Open **[http://localhost:3000](http://localhost:3000)** and launch the Virtual Office.
+2. In the top-right toolbar:
+   - Click **`Spawn Near (~70px)`**: Spawns a bot ~70 pixels away within the 100px proximity boundary.
+     - Note the green acoustic ring and connection beam connecting you and the bot.
+     - Click **`Signal`** on the peer in the Earshot list: the offer is successfully routed and approved by the backend server!
+   - Click **`Spawn Far (>100px)`**: Spawns a bot ~160 pixels away outside the 100px boundary.
+     - Click **`Signal`** on the far peer: The backend Socket.io gatekeeper instantly intercepts and **blocks** the offer, emitting `webrtc-signal-rejected`!
+     - A warning alert appears indicating: *"WebRTC Offer Blocked: Peer is 160px away, exceeding the 100-pixel earshot limit."*
+3. **Boundary Transitions:**
+   - Walk your avatar closer to the distant bot using **W, A, S, D**.
+   - As soon as the distance drops to $\le 100\text{px}$, the server emits `proximity-peer-entered`.
+   - Walk away until distance $> 100\text{px}$; the server emits `proximity-peer-left` and terminates the audio peer connection.
+
+### B. Testing MongoDB `$near` Audio Pod Groupings
+1. In the Virtual Office HUD, click the **`$near Groups`** button.
+2. A modal dialog opens showing real-time clustering computed by MongoDB `$near` queries on the 2D Cartesian index:
+   - **Audio Pods:** Groups of users clustered within a 100px radius, displaying calculated centroid coordinates $\bar{C} = [X, Y]$, pod leader, and members with Euclidean distances.
+   - **Solo Users:** Out-of-range avatars located $> 100\text{px}$ from any colleague, marked with *"No peers within 100-pixel radius (WebRTC offers restricted)"*.
+3. Test via REST API directly:
    ```bash
-   curl "http://localhost:5000/api/spatial/nearby?x=200&y=200&radius=300"
+   # Inspect MongoDB $near proximity pods
+   curl "http://localhost:5000/api/spatial/groups?radius=100"
+
+   # Verify coordinate pair proximity against 100px gatekeeper
+   curl -X POST "http://localhost:5000/api/spatial/verify-proximity" \
+     -H "Content-Type: application/json" \
+     -d "{\"fromCoords\": [200, 200], \"toCoords\": [260, 240]}"
    ```
 
 ---
