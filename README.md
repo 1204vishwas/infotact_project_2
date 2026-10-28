@@ -47,7 +47,7 @@ This repository implements the **Authentication & Spatial Identity Onboarding Mo
 - Visual badge with role, avatar color, and WebRTC audio stream status.
 - One-click "Sign Out" to return to the login interface.
 
-### 5. **Backend Auth Server (`server/`)**
+### 5. **Backend Auth Server (`backend/`)**
 - **Node.js & Express:** REST API on `http://localhost:5000`.
 - **MongoDB Geospatial Index:** User coordinates indexed with `2d` planar index (`min: -1000, max: 10000`).
 - **Security:** `bcryptjs` password hashing with salt rounds + `jsonwebtoken` (JWT) token issuance.
@@ -139,20 +139,20 @@ Both servers are currently configured and running:
 
 1. **Frontend Application:**
    ```bash
-   cd client
+   cd frontend
    npm run dev
    ```
    *Accessible at: [http://localhost:3000](http://localhost:3000)*
 
 2. **Backend Authentication Server:**
    ```bash
-   cd server
+   cd backend
    npm start
    ```
    *Accessible at: [http://localhost:5000](http://localhost:5000)*
 
 3. **Or run concurrently from root:**
    ```bash
-   npm run client
-   npm run server
+   npm run frontend
+   npm run backend
    ```
