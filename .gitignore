@@ -10,4 +10,6 @@ client/dist/
 # Environment secrets — never commit.
 server/.env
 .env
-*.env.local
+*.env.localbackend/node_modules/
+frontend/node_modules/
+node_modules/
