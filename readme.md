@@ -118,6 +118,26 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
   - `Spawn Far (>100px)`: Places a peer at 160px (WebRTC signaling blocked by server gatekeeper).
 - **Manual Signal Button:** Dispatches test WebRTC offers with visual toast alerts showing server approval or rejection.
 
+### 🎙️ 4. Standard WebRTC P2P Audio Integration via `getUserMedia` (`webrtcManager.js`)
+- **Browser Audio Capture:** Requests microphone stream via `navigator.mediaDevices.getUserMedia` with high-fidelity acoustic constraints (`echoCancellation: true`, `noiseSuppression: true`, `autoGainControl: true`, `channelCount: 1`).
+- **WebRTC PeerConnection Lifecycle:**
+  - Standard Google STUN servers (`stun.l.google.com:19302`).
+  - Attaches local audio tracks to `RTCPeerConnection`.
+  - Full handshake flow: `createOffer()`, `setLocalDescription()`, `setRemoteDescription()`, `createAnswer()`, and ICE candidate trickling.
+  - Queues early ICE candidates and flushes them automatically once remote descriptions are set.
+- **Dynamic Distance-Based Audio Attenuation:**
+  - Distance $\le 100\text{px}$: Gain smoothly scales from $100\%$ at close proximity down to $10\%$ at the 100px boundary.
+  - Distance $> 100\text{px}$: Audio channel closes and resets volume to $0\%$.
+- **HTML5 Canvas Real-Time Audio Visualizer (`AudioWaveformVisualizer.jsx`):**
+  - **Oscilloscope Waveform:** 60 FPS time-domain wave render with neon gradient (`#38bdf8` -> `#818cf8` -> `#f472b6`).
+  - **FFT Spectrum Analyzer:** 32-band frequency equalizer bars bouncing in sync with human voice fundamentals.
+  - **VU Decibel Meter:** Real-time volume level display in decibels (-60 dB to 0 dB) with speech detection flags.
+  - **Interactive Loopback Self-Test:** In-browser WebRTC loopback test (`pc1 <-> pc2`) allowing developers to test microphone input, playback, and visualizer without needing a second participant.
+- **Canvas World Acoustic Features:**
+  - **Voice Acoustic Emission Rings:** Avatars emit pulsating shockwaves on the canvas when speaking.
+  - **Acoustic Sine Wave Beam:** Fluid undulating sound wave connecting avatars within 100px earshot.
+  - **Speech Equalizers:** Animated 3-bar speech equalizer above avatars actively speaking.
+
 ---
 
 ## 🗄️ 5. MongoDB Database & Compass Integration (`proxify`)
@@ -149,8 +169,11 @@ project_2/
 │       ├── App.jsx           # Main controller & view transition manager
 │       ├── main.jsx          # React DOM root entry
 │       ├── index.css         # Tailwind styles & radar pulse keyframes
+│       ├── utils/
+│       │   └── webrtcManager.js         # WebRTC P2P manager, getUserMedia, Web Audio API & loopback
 │       └── components/
 │           ├── VirtualOfficeWorld.jsx   # 2D Canvas Layer, 100px proximity gatekeeper & pods
+│           ├── AudioWaveformVisualizer.jsx # HTML5 Canvas audio oscilloscope & FFT spectrum visualizer
 │           ├── Navbar.jsx               # Infotact branding & world switcher
 │           ├── LoginPage.jsx            # Sign-in form with Gmail & Social OAuth
 │           ├── SignUpPage.jsx           # Avatar registration with live color picker
