@@ -71,18 +71,18 @@ This module turns the authenticated profile into a living 2D virtual office:
 - **Earshot proximity system:** a pulsing `100px` earshot ring with live Web Audio-style gain attenuation, connection lines and radiating sound waves to peers inside earshot.
 
 ### 7. **Real-Time Coordinate Broadcasting (`useWorldSocket.js` + Socket.io)**
-- **Socket.io world layer** (`server/realtime/worldSocket.js`) authenticates sockets with the login JWT and maintains a live in-memory roster of avatars.
+- **Socket.io world layer** (`backend/realtime/worldSocket.js`) authenticates sockets with the login JWT and maintains a live in-memory roster of avatars.
 - **`world:join` / `world:state`** — newcomers receive the office bounds and the full avatar snapshot; others are notified via `world:player-joined`.
 - **`world:move`** — high-frequency (<100ms throttled) coordinate broadcasting; every move is relayed to all peers in the world.
 - **Geospatial persistence** — coordinates are throttled-upserted back into the MongoDB `2d` index, keeping the `$near` / `$geoWithin` engine live.
 - **Graceful degradation** — if the backend is offline, the canvas switches to a local simulation (demo colleagues wander the office) so movement and proximity behaviour remain fully testable.
 
 ### 8. **Week 2 — Proximity Audio & WebRTC Peer-to-Peer Audio (`useWebRTC.js`)**
-- **100px hearing radius:** `EARSHOT = 100` (`client/src/hooks/useWebRTC.js`) is the single source of truth for the radius. `WorldCanvas.jsx` imports it as `EARSHOT_RADIUS`, so the drawn ring, the "in earshot" HUD and the real connection threshold can never disagree. Distance is Euclidean (`Math.hypot`) in canvas world units (1200×720). A peer connection is only opened for colleagues inside the radius, and the offline demo bots are explicitly excluded from negotiation.
+- **100px hearing radius:** `EARSHOT = 100` (`frontend/src/hooks/useWebRTC.js`) is the single source of truth for the radius. `WorldCanvas.jsx` imports it as `EARSHOT_RADIUS`, so the drawn ring, the "in earshot" HUD and the real connection threshold can never disagree. Distance is Euclidean (`Math.hypot`) in canvas world units (1200×720). A peer connection is only opened for colleagues inside the radius, and the offline demo bots are explicitly excluded from negotiation.
 - **Proximity-based voice communication:** users within the 100-pixel hearing radius can establish WebRTC peer-to-peer audio connections, so it is proximity — not a manual breakout room — that decides who can talk to whom. Once the audio connection is successfully established, nearby colleagues can hear each other in real time, and their voices fade as they move apart.
 - **Real peer-to-peer audio:** a genuine `RTCPeerConnection` per nearby colleague, fed by `getUserMedia` microphone audio. The audio transceiver is created up front with direction `sendrecv`, so the local mic is attached later via `replaceTrack()` and no renegotiation is ever required. ICE is STUN-only (no TURN relay), so peers behind symmetric NAT may fail to connect.
 - **Deterministic initiator:** only the lexicographically smaller user id creates the SDP offer; the other side only answers. This removes offer glare, which previously left the polite peer with zero ICE candidates and a link that never connected.
-- **Signaling over Socket.io:** `world:offer`, `world:answer` and `world:ice-candidate` are relayed 1:1 by `server/realtime/worldSocket.js`. The server brokers the handshake only — it never touches the media.
+- **Signaling over Socket.io:** `world:offer`, `world:answer` and `world:ice-candidate` are relayed 1:1 by `backend/realtime/worldSocket.js`. The server brokers the handshake only — it never touches the media.
 - **Distance-based attenuation:** each peer's remote stream plays through a hidden `<audio autoplay>` element whose `volume` is `0.4 + 0.6 × (1 − distance / 100)` — 100% at zero distance, 40% at the 100px edge. An existing link is kept for a 2.5s grace period, so a peer drifting just past the boundary does not churn the connection.
 - **Not implemented:** there is no spatial panning — no `StereoPannerNode` or `PannerNode` is used, so remote voices are centred. Web Audio is used only to analyse RMS level (driving the "speaking" ring and the mic meter) and to generate the 440 Hz test tone; it is not in the remote playback path.
 - **Honest diagnostics:** the canvas shows a live `RTC pcs=… tx(…) rx(…)` handshake readout, plus per-peer connection/ICE/signaling state, remote-track and playback flags, and real `bytesReceived` counters from `getStats()`. `window.__proxispeakRtc.snapshot()` exposes the same state to the browser console. There is no automated test suite yet — this behaviour is verified through these runtime diagnostics.
@@ -95,7 +95,7 @@ This module turns the authenticated profile into a living 2D virtual office:
 project_2/
 ├── package.json              # Workspace root scripts
 ├── readme.md                 # Project documentation
-├── server/                   # Backend Express & MongoDB Auth API
+├── backend/                   # Backend Express & MongoDB Auth API
 │   ├── .env                  # Port (5000) & MongoDB URI
 │   ├── package.json          # Backend dependencies
 │   ├── server.js             # Express entry point + Socket.io world layer
@@ -109,7 +109,7 @@ project_2/
 │   └── routes/
 │       ├── auth.js           # Register, Login, Me, Demo accounts
 │       └── world.js          # GET /api/world/bounds · GET /api/world/online
-└── client/                   # Frontend Vite + React + Tailwind CSS
+└── frontend/                   # Frontend Vite + React + Tailwind CSS
     ├── index.html            # App HTML & typography
     ├── package.json          # React, Vite, Lucide-react, Tailwind v4, socket.io-client
     ├── vite.config.js        # Vite config with backend & socket.io proxy
