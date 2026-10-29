@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const OfficeSpace = require('../models/OfficeSpace');
+const { runSpatialAudit, filterUsersByProximity, clusterUsersByProximity, generateTestAvatars } = require('../services/spatialAudit');
 
 // Default Office Zones for ProxiSpeak 2D World
 const DEFAULT_OFFICE_ZONES = [
@@ -83,7 +84,6 @@ router.get('/room', async (req, res) => {
       }
     });
   } catch (err) {
-    // Return default static structure if DB error
     res.json({
       success: true,
       office: {
@@ -98,27 +98,35 @@ router.get('/room', async (req, res) => {
 });
 
 // ====================================================
-// 2. GET /api/spatial/nearby — MongoDB $near Geospatial Query
+// 2. GET /api/spatial/nearby — High-Performance Geospatial Proximity Query (< 20ms)
 // ====================================================
 router.get('/nearby', async (req, res) => {
+  const startTime = process.hrtime.bigint();
   try {
     const x = parseFloat(req.query.x);
     const y = parseFloat(req.query.y);
-    const radius = parseFloat(req.query.radius) || 100; // Default to 100-pixel WebRTC earshot radius
+    const radius = parseFloat(req.query.radius) || 100;
 
     if (isNaN(x) || isNaN(y)) {
       return res.status(400).json({ success: false, message: 'Invalid coordinates x and y.' });
     }
 
-    // Native MongoDB $near query using the 2D planar index
     const nearbyUsers = await User.findNearby(x, y, radius);
+    const endTime = process.hrtime.bigint();
+    const executionTimeMs = Math.round((Number(endTime - startTime) / 1_000_000) * 1000) / 1000;
 
     res.json({
       success: true,
       query: { x, y, radius },
       webrtcThreshold: 100,
       totalFound: nearbyUsers.length,
-      users: nearbyUsers
+      users: nearbyUsers,
+      performance: {
+        executionTimeMs,
+        slaTargetMs: 20.0,
+        status: executionTimeMs < 20.0 ? 'PASSED' : 'EXCEEDED',
+        headroomPercent: Math.round(((20.0 - executionTimeMs) / 20.0) * 1000) / 10
+      }
     });
   } catch (err) {
     console.error('Geospatial query error:', err);
@@ -127,19 +135,28 @@ router.get('/nearby', async (req, res) => {
 });
 
 // ====================================================
-// 3. GET /api/spatial/groups — Group Users Using MongoDB $near
+// 3. GET /api/spatial/groups — Group Users Using Iterative Audio Pod Clustering (< 20ms)
 // ====================================================
 router.get('/groups', async (req, res) => {
+  const startTime = process.hrtime.bigint();
   try {
-    const radius = parseFloat(req.query.radius) || 100; // 100-pixel radius threshold
-
+    const radius = parseFloat(req.query.radius) || 100;
     const groupingResult = await User.groupUsersByProximity(radius);
+
+    const endTime = process.hrtime.bigint();
+    const executionTimeMs = Math.round((Number(endTime - startTime) / 1_000_000) * 1000) / 1000;
 
     res.json({
       success: true,
-      description: 'Proximity groupings generated via iterative MongoDB $near queries on 2D planar index',
+      description: 'Proximity groupings generated via iterative 2D planar index & Euclidean centroid engine',
       webrtcRadiusLimit: radius,
-      ...groupingResult
+      ...groupingResult,
+      performance: {
+        executionTimeMs,
+        slaTargetMs: 20.0,
+        status: executionTimeMs < 20.0 ? 'PASSED' : 'EXCEEDED',
+        headroomPercent: Math.round(((20.0 - executionTimeMs) / 20.0) * 1000) / 10
+      }
     });
   } catch (err) {
     console.error('Geospatial grouping error:', err);
@@ -183,6 +200,45 @@ router.post('/verify-proximity', async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to verify proximity.' });
+  }
+});
+
+// ====================================================
+// 5. GET /api/spatial/audit — Mid-Project Review Spatial Audit Engine (< 20ms Verification)
+// ====================================================
+router.get('/audit', (req, res) => {
+  try {
+    const userCount = parseInt(req.query.userCount) || 50;
+    const iterations = parseInt(req.query.iterations) || 100;
+    const radius = parseFloat(req.query.radius) || 100;
+
+    const auditResults = runSpatialAudit({ userCount, iterations, radius });
+
+    res.json({
+      success: true,
+      milestone: 'Mid-Project Review: Spatial Audit (<20ms SLA)',
+      ...auditResults
+    });
+  } catch (err) {
+    console.error('Spatial audit error:', err);
+    res.status(500).json({ success: false, message: `Spatial audit execution error: ${err.message}` });
+  }
+});
+
+// ====================================================
+// 6. POST /api/spatial/audit/custom — Custom Scalability Stress Audit
+// ====================================================
+router.post('/audit/custom', (req, res) => {
+  try {
+    const { userCount = 100, iterations = 100, radius = 100 } = req.body;
+    const auditResults = runSpatialAudit({ userCount, iterations, radius });
+
+    res.json({
+      success: true,
+      ...auditResults
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: `Custom spatial audit error: ${err.message}` });
   }
 });
 

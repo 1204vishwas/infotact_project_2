@@ -32,6 +32,7 @@ import {
 
 import { WebRTCAudioManager } from '../utils/webrtcManager';
 import AudioWaveformVisualizer from './AudioWaveformVisualizer';
+import SpatialAuditModal from './SpatialAuditModal';
 
 export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast }) {
   const canvasRef = useRef(null);
@@ -55,6 +56,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   const [proximityGroups, setProximityGroups] = useState([]);
   const [isGroupsModalOpen, setIsGroupsModalOpen] = useState(false);
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+  const [isSpatialAuditOpen, setIsSpatialAuditOpen] = useState(false);
   const [recentWebRTCAlert, setRecentWebRTCAlert] = useState(null);
   const [peerConnectionStates, setPeerConnectionStates] = useState({});
   const [botAudioActive, setBotAudioActive] = useState(false);
@@ -1208,6 +1210,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           <div className="flex flex-wrap items-center gap-1.5">
             <button
               type="button"
+              onClick={() => setIsSpatialAuditOpen(true)}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-emerald-600/80 hover:bg-emerald-600 border border-emerald-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-emerald-600/20 cursor-pointer transition-all"
+              title="Run Mid-Project Review Spatial Audit (< 20ms Verification)"
+            >
+              <Activity className="w-3.5 h-3.5 text-emerald-200" />
+              <span>Spatial Audit (&lt;20ms)</span>
+            </button>
+
+            <button
+              type="button"
               onClick={handleOpenProximityGroups}
               className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-cyan-600/80 hover:bg-cyan-600 border border-cyan-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-cyan-600/20 cursor-pointer transition-all"
               title="View MongoDB $near proximity audio pod groupings"
@@ -1635,6 +1647,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           </div>
         </div>
       )}
+
+      {/* ====================================================
+          10. SPATIAL AUDIT & LATENCY BENCHMARK MODAL (< 20ms SLA)
+         ==================================================== */}
+      <SpatialAuditModal
+        isOpen={isSpatialAuditOpen}
+        onClose={() => setIsSpatialAuditOpen(false)}
+      />
     </div>
   );
 }
