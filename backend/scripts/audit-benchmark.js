@@ -1,7 +1,7 @@
 /**
  * ProxiSpeak CLI Spatial Audit Benchmark Runner
  * Infotact Solutions — ISO 9001:2015 Quality Assurance
- *
+ * 
  * Executes full automated audit suite proving:
  * 1. Filtering accuracy (0% false positives, 0% false negatives)
  * 2. Clustering accuracy (exact arithmetic centroids)
