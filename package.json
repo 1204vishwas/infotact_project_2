@@ -8,7 +8,8 @@
     "server": "npm --prefix backend start",
     "client": "npm --prefix frontend dev",
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
-    "audit": "npm --prefix backend run audit"
+    "audit": "npm --prefix backend run audit",
+    "audio-check": "npm --prefix backend run audio-check"
   },
   "keywords": [
     "proxispeak",
