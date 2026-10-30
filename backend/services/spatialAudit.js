@@ -1,7 +1,7 @@
 /**
  * ProxiSpeak Spatial Audit & Performance Verification Engine
  * Infotact Solutions — ISO 9001:2015 Quality Assurance
- * 
+ *
  * Mid-Project Review Audit Deliverable:
  * Proves that the backend accurately filters and clusters users based on
  * geospatial coordinates strictly under the 20ms SLA latency threshold.

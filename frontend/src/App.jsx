@@ -3,30 +3,32 @@ import Navbar from './components/Navbar';
 import LoginPage from './components/LoginPage';
 import SignUpPage from './components/SignUpPage';
 import ProximityRadarPreview from './components/ProximityRadarPreview';
+import WorldCanvas from './components/WorldCanvas';
+import ProfilePanel from './components/ProfilePanel';
 import SessionDashboard from './components/SessionDashboard';
 import VirtualOfficeWorld from './components/VirtualOfficeWorld';
 import ForgotPasswordModal from './components/ForgotPasswordModal';
-import { Radio, ShieldCheck, MapPin, CheckCircle2, AlertCircle, Info, Sparkles, Compass } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, Sparkles, Compass } from 'lucide-react';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('login'); // 'login' | 'signup' | 'dashboard' | 'world'
+  // 'login' | 'signup' | 'world' | 'office' | 'dashboard' | 'profile'
+  const [currentView, setCurrentView] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
+  const [sessionToken, setSessionToken] = useState(null); // stable per-tab token captured at auth time
+  const [savedSession, setSavedSession] = useState(null); // { user, token } detected but NOT auto-restored
   const [previewAvatarColor, setPreviewAvatarColor] = useState('#6366f1');
   const [previewName, setPreviewName] = useState('You');
   const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
   const [backendStatus, setBackendStatus] = useState('checking'); // 'connected' | 'offline'
+  const [socketStatus, setSocketStatus] = useState('idle'); // 'connecting' | 'connected' | 'offline' | 'idle'
   const [toast, setToast] = useState(null);
 
-  // Check backend health & socket connection
+  // Check backend health
   useEffect(() => {
     const checkBackend = async () => {
       try {
         const res = await fetch('/api/health');
-        if (res.ok) {
-          setBackendStatus('connected');
-        } else {
-          setBackendStatus('offline');
-        }
+        setBackendStatus(res.ok ? 'connected' : 'offline');
       } catch (err) {
         setBackendStatus('offline');
       }
@@ -34,23 +36,31 @@ export default function App() {
     checkBackend();
   }, []);
 
-  // Check stored user session
+  // Detect a previously saved session WITHOUT auto-restoring it. Opening the
+  // app always shows the login page; the stored identity is only resumed after
+  // the user explicitly confirms AND the backend validates the JWT.
   useEffect(() => {
-    const storedUser = localStorage.getItem('proxispeak_user') || sessionStorage.getItem('proxispeak_user');
-    const storedToken = localStorage.getItem('proxispeak_token') || sessionStorage.getItem('proxispeak_token');
+    const storedUser = sessionStorage.getItem('proxispeak_user') || localStorage.getItem('proxispeak_user');
+    const storedToken = sessionStorage.getItem('proxispeak_token') || localStorage.getItem('proxispeak_token');
 
     if (storedUser && storedToken) {
       try {
-        const parsed = JSON.parse(storedUser);
-        setCurrentUser(parsed);
-        // Default to the 2D Virtual Office Canvas World for logged in users
-        setCurrentView('world');
+        setSavedSession({ user: JSON.parse(storedUser), token: storedToken });
       } catch (e) {
         localStorage.removeItem('proxispeak_user');
         sessionStorage.removeItem('proxispeak_user');
+        setSavedSession(null);
       }
     }
   }, []);
+
+  const clearStoredSession = () => {
+    localStorage.removeItem('proxispeak_token');
+    localStorage.removeItem('proxispeak_user');
+    sessionStorage.removeItem('proxispeak_token');
+    sessionStorage.removeItem('proxispeak_user');
+    setSavedSession(null);
+  };
 
   const showToast = (message, type = 'info') => {
     setToast({ message, type });
@@ -59,25 +69,62 @@ export default function App() {
     }, 4000);
   };
 
-  const handleLoginSuccess = (user, token) => {
+  const handleResumeSession = async () => {
+    if (!savedSession) return;
+    try {
+      const res = await fetch('/api/auth/me', {
+        headers: { Authorization: `Bearer ${savedSession.token}` }
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success) {
+          const freshUser = data.user || savedSession.user;
+          sessionStorage.setItem('proxispeak_user', JSON.stringify(freshUser));
+          sessionStorage.setItem('proxispeak_token', savedSession.token);
+          setCurrentUser(freshUser);
+          setSessionToken(savedSession.token);
+          setSocketStatus('connecting');
+          setCurrentView('world');
+          showToast(`Session resumed for ${freshUser.name || 'you'}.`, 'success');
+          return;
+        }
+      }
+    } catch (err) {
+      console.warn('Session validation unavailable:', err);
+    }
+
+    // Token invalid, expired, or backend unreachable — never inherit the session.
+    clearStoredSession();
+    showToast('Saved session could not be validated. Please log in again.', 'error');
+  };
+
+  const enterWorkspace = (user, token) => {
     setCurrentUser(user);
-    // Take user directly into the 2D Virtual Office World!
+    setSessionToken(token || null);
+    setSocketStatus(token ? 'connecting' : 'idle');
+    // Default to the 2D Virtual Office World for authenticated users.
     setCurrentView('world');
-    showToast(`Welcome ${user.name}! Stepping into the 2D Virtual Office...`, 'success');
+  };
+
+  const handleLoginSuccess = (user, token) => {
+    sessionStorage.setItem('proxispeak_user', JSON.stringify(user));
+    sessionStorage.setItem('proxispeak_token', token);
+    enterWorkspace(user, token);
   };
 
   const handleSignupSuccess = (user, token) => {
-    setCurrentUser(user);
-    setCurrentView('world');
-    showToast(`Welcome ${user.name}! Your avatar is now live on the 2D Canvas!`, 'success');
+    if (token) {
+      sessionStorage.setItem('proxispeak_user', JSON.stringify(user));
+      sessionStorage.setItem('proxispeak_token', token);
+    }
+    enterWorkspace(user, token);
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('proxispeak_token');
-    localStorage.removeItem('proxispeak_user');
-    sessionStorage.removeItem('proxispeak_token');
-    sessionStorage.removeItem('proxispeak_user');
+    clearStoredSession();
     setCurrentUser(null);
+    setSessionToken(null);
+    setSocketStatus('idle');
     setCurrentView('login');
     showToast('Signed out from ProxiSpeak workspace.', 'info');
   };
@@ -87,7 +134,7 @@ export default function App() {
     if (name) setPreviewName(name);
   };
 
-  // Guest avatar profile if entering world without logging in
+  // Guest avatar profile if entering the world without logging in
   const guestUser = {
     id: 'guest_' + Math.random().toString(36).substring(2, 8),
     name: 'Guest Colleague',
@@ -120,19 +167,28 @@ export default function App() {
       <Navbar
         currentView={currentView}
         setCurrentView={setCurrentView}
+        user={currentUser}
         backendStatus={backendStatus}
-        currentUser={currentUser}
+        socketStatus={socketStatus}
         onLogout={handleLogout}
       />
 
       {/* Main Content Area */}
       <main className="flex-1 flex flex-col justify-center px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-7xl mx-auto w-full">
         {currentView === 'world' ? (
-          /* WEEK 1: 2D Virtual World (React & Canvas layer) with smooth keyboard/mouse movement */
+          /* 2D Virtual Office World (React & Canvas layer) */
           <VirtualOfficeWorld
             user={currentUser || guestUser}
             onBackToDashboard={() => setCurrentView(currentUser ? 'dashboard' : 'login')}
             showToast={showToast}
+          />
+        ) : currentView === 'office' ? (
+          /* Geospatial proximity canvas with Socket.io + Web Audio attenuation */
+          <WorldCanvas
+            user={currentUser}
+            token={sessionToken}
+            showToast={showToast}
+            onStatusChange={setSocketStatus}
           />
         ) : currentView === 'dashboard' ? (
           <SessionDashboard
@@ -140,6 +196,8 @@ export default function App() {
             onLogout={handleLogout}
             onLaunchWorld={() => setCurrentView('world')}
           />
+        ) : currentView === 'profile' ? (
+          <ProfilePanel user={currentUser} onLogout={handleLogout} />
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
             {/* Left Column: Auth Form (Sign Up or Login) */}
@@ -150,6 +208,9 @@ export default function App() {
                   onSwitchToSignup={() => setCurrentView('signup')}
                   onOpenForgotPassword={() => setIsForgotPasswordOpen(true)}
                   showToast={showToast}
+                  restoredSession={savedSession}
+                  onResumeSession={handleResumeSession}
+                  onClearSession={clearStoredSession}
                 />
               ) : (
                 <SignUpPage
@@ -183,16 +244,21 @@ export default function App() {
                     "ProxiSpeak": Geospatial Proximity Audio Ecosystem
                   </h3>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Week 1 brings the <strong className="text-slate-200">React Canvas layer</strong> and <strong className="text-slate-200">Node.js + Socket.io WebSocket server</strong> to life! Move avatars smoothly via keyboard or mouse with real-time X/Y coordinate broadcasting and MongoDB geospatial 2D indexing.
+                    Unlike rigid Zoom rooms, colleagues communicate by naturally walking over to peer clusters in a
+                    2D overhead canvas. The React Canvas layer and Node.js + Socket.io server broadcast X/Y
+                    coordinates in real time, with MongoDB geospatial indexing, WebRTC signaling, and Web Audio API
+                    distance attenuation.
                   </p>
                 </div>
               </div>
 
               {/* The Interactive Radar Visualizer */}
-              <ProximityRadarPreview
-                previewAvatarColor={previewAvatarColor}
-                previewName={previewName}
-              />
+              {ProximityRadarPreview && (
+                <ProximityRadarPreview
+                  previewAvatarColor={previewAvatarColor}
+                  previewName={previewName}
+                />
+              )}
             </div>
           </div>
         )}
@@ -214,7 +280,7 @@ export default function App() {
             </span>
             <span className="text-slate-600">|</span>
             <span className="text-[11px] text-slate-400 font-mono">
-              Week 1: Socket.io & React Canvas
+              Canvas • Signaling • Redis
             </span>
           </div>
         </div>
