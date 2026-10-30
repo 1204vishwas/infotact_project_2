@@ -1,22 +1,33 @@
 import React from 'react';
-import { LogOut, MonitorPlay, Radio, ShieldCheck, Wifi, WifiOff } from 'lucide-react';
+import {
+  LogOut,
+  MonitorPlay,
+  Radio,
+  ShieldCheck,
+  Wifi,
+  WifiOff,
+  Compass,
+  LayoutDashboard,
+  UserRound
+} from 'lucide-react';
 
 export default function Navbar({ currentView, setCurrentView, user, backendStatus, socketStatus, onLogout }) {
   const isAuthed = Boolean(user);
   const signalingLive = socketStatus === 'connected';
 
-  const navItem = (view, label) => (
+  const navItem = (view, label, Icon) => (
     <button
       type="button"
       key={view}
       onClick={() => setCurrentView(view)}
-      className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all ${
+      className={`px-2.5 sm:px-3 py-1.5 text-xs font-medium rounded-md transition-all flex items-center space-x-1.5 cursor-pointer ${
         currentView === view
           ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/50'
           : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800/70'
       }`}
     >
-      {label}
+      {Icon && <Icon className="w-3.5 h-3.5 shrink-0" />}
+      <span>{label}</span>
     </button>
   );
 
@@ -24,7 +35,10 @@ export default function Navbar({ currentView, setCurrentView, user, backendStatu
     <header className="w-full border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-md sticky top-0 z-50">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-3">
         {/* Brand / Logo */}
-        <div className="flex items-center space-x-3 min-w-0">
+        <div
+          className="flex items-center space-x-3 min-w-0 cursor-pointer"
+          onClick={() => setCurrentView(isAuthed ? 'world' : 'login')}
+        >
           <div className="relative flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-tr from-cyan-600 via-indigo-600 to-violet-600 shadow-lg shadow-indigo-500/20 shrink-0">
             <Radio className="w-5 h-5 text-white animate-pulse" />
             <span className="absolute -top-1 -right-1 flex h-3 w-3">
@@ -49,7 +63,7 @@ export default function Navbar({ currentView, setCurrentView, user, backendStatu
           </div>
         </div>
 
-        {/* Status Indicators (original nav) */}
+        {/* Status Badges */}
         <div className="hidden lg:flex items-center space-x-2 text-xs text-slate-400">
           <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-md bg-slate-900 border border-slate-800">
             <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
@@ -91,13 +105,16 @@ export default function Navbar({ currentView, setCurrentView, user, backendStatu
           <div className="flex bg-slate-900/90 p-1 rounded-lg border border-slate-800">
             {isAuthed ? (
               <>
-                {navItem('office', '2D Canvas World')}
-                {navItem('profile', 'Profile')}
+                {navItem('world', '2D World', Compass)}
+                {navItem('office', 'Canvas', MonitorPlay)}
+                {navItem('dashboard', 'Dashboard', LayoutDashboard)}
+                {navItem('profile', 'Profile', UserRound)}
               </>
             ) : (
               <>
                 {navItem('login', 'Log In')}
                 {navItem('signup', 'Sign Up')}
+                {navItem('world', 'Guest World', Compass)}
               </>
             )}
           </div>

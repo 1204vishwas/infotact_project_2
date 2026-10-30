@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { User, Mail, AtSign, Lock, Eye, EyeOff, UserPlus, ArrowRight, ShieldCheck, Check, AlertCircle, Palette, Headphones } from 'lucide-react';
+import SocialAuthModal, { GoogleLogo, FacebookLogo } from './SocialAuthModal';
 
 export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarChange, showToast }) {
   const [formData, setFormData] = useState({
@@ -18,6 +19,13 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isSocialModalOpen, setIsSocialModalOpen] = useState(false);
+  const [socialProvider, setSocialProvider] = useState('google');
+
+  const handleOpenSocial = (provider) => {
+    setSocialProvider(provider);
+    setIsSocialModalOpen(true);
+  };
 
   const colorOptions = [
     { name: 'Indigo Pulse', hex: '#6366f1' },
@@ -78,6 +86,13 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
       return;
     }
 
+    const cleanEmail = formData.email.toLowerCase().trim();
+    // Enforce Gmail only
+    if (!cleanEmail.endsWith('@gmail.com')) {
+      setErrorMessage('Registration is restricted to Gmail accounts only. Please use your personal or work @gmail.com address.');
+      return;
+    }
+
     if (formData.password.length < 6) {
       setErrorMessage('Password must be at least 6 characters long.');
       return;
@@ -101,7 +116,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           name: formData.name.trim(),
-          email: formData.email.trim(),
+          email: cleanEmail,
           username: formData.username.trim(),
           role: formData.role,
           department: formData.department,
@@ -126,7 +141,7 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
       const newUser = {
         id: 'user_' + Date.now(),
         name: formData.name.trim(),
-        email: formData.email.toLowerCase().trim(),
+        email: cleanEmail,
         username: formData.username.toLowerCase().trim(),
         role: formData.role,
         department: formData.department,
@@ -158,8 +173,41 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
             Create Your Spatial Avatar
           </h2>
           <p className="text-xs text-slate-400 mt-1.5">
-            Configure your 2D presence & join the Infotact virtual office
+            Configure your 2D presence using your Gmail or social account
           </p>
+        </div>
+
+        {/* Social Registration: Google & Facebook */}
+        <div className="mb-5">
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => handleOpenSocial('google')}
+              className="flex items-center justify-center space-x-2 py-2.5 px-3 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-bold transition-all shadow-md hover:shadow-cyan-500/10 cursor-pointer active:scale-98"
+            >
+              <GoogleLogo className="w-4 h-4" />
+              <span>Google Sign-Up</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenSocial('facebook')}
+              className="flex items-center justify-center space-x-2 py-2.5 px-3 bg-[#1877F2] hover:bg-[#166fe5] text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-[#1877F2]/25 cursor-pointer active:scale-98"
+            >
+              <FacebookLogo className="w-4 h-4" />
+              <span>Facebook Sign-Up</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Divider */}
+        <div className="relative my-4 text-center">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-slate-800" />
+          </div>
+          <span className="relative px-3 bg-slate-900 text-slate-400 text-[10px] uppercase tracking-wider">
+            Or register with your Gmail
+          </span>
         </div>
 
         {/* Error Notification */}
@@ -212,11 +260,14 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
             </div>
           </div>
 
-          {/* Work Email */}
+          {/* Gmail Address */}
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              Work Email Address *
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-slate-300">
+                Gmail Address *
+              </label>
+              <span className="text-[10px] text-cyan-400 font-mono">@gmail.com required</span>
+            </div>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                 <Mail className="w-4 h-4" />
@@ -225,11 +276,16 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
                 type="email"
                 value={formData.email}
                 onChange={(e) => handleChange('email', e.target.value)}
-                placeholder="name@infotact.in"
+                placeholder="priya.sharma@gmail.com"
                 required
                 className="w-full pl-10 pr-3.5 py-2 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-cyan-500 focus:ring-1 focus:ring-cyan-500 transition-all"
               />
             </div>
+            {formData.email && !formData.email.toLowerCase().endsWith('@gmail.com') && (
+              <p className="text-[11px] text-amber-400 mt-1 flex items-center gap-1">
+                <span>Must end with</span> <strong className="font-mono">@gmail.com</strong>
+              </p>
+            )}
           </div>
 
           {/* Role and Department */}
@@ -435,6 +491,16 @@ export default function SignUpPage({ onSignupSuccess, onSwitchToLogin, onAvatarC
           </p>
         </div>
       </div>
+
+      {/* Social OAuth Modal for Google & Facebook Registration */}
+      <SocialAuthModal
+        isOpen={isSocialModalOpen}
+        onClose={() => setIsSocialModalOpen(false)}
+        provider={socialProvider}
+        mode="signup"
+        onSuccess={onSignupSuccess}
+        showToast={showToast}
+      />
     </div>
   );
 }

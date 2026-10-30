@@ -16,7 +16,7 @@ import {
   WifiOff
 } from 'lucide-react';
 import useWorldSocket from '../hooks/useWorldSocket';
-import useWebRTC, { SPEAKING_THRESHOLD, EARSHOT } from '../hooks/useWebRTC';
+import useWebRTC, { SPEAKING_THRESHOLD, EARSHOT, attenuationGain } from '../hooks/useWebRTC';
 
 // ---------------------------------------------------------------------------
 // World configuration — must mirror server/realtime/worldState.js OFFICE_BOUNDS
@@ -538,7 +538,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
       others.forEach((p) => {
         const dist = Math.hypot(p.x - self.x, p.y - self.y);
         if (dist > EARSHOT_RADIUS) return;
-        const gain = clamp((1 - dist / EARSHOT_RADIUS) * 100, 0, 100);
+        const gain = attenuationGain(dist, EARSHOT_RADIUS) * 100;
 
         ctx.beginPath();
         ctx.moveTo(self.x, self.y);
@@ -689,7 +689,7 @@ export default function WorldCanvas({ user, token, showToast, onStatusChange }) 
           .map((p) => {
             const dist = Math.round(Math.hypot(p.x - self.x, p.y - self.y));
             const inEarshot = dist <= EARSHOT_RADIUS;
-            const gain = inEarshot ? clamp(Math.round((1 - dist / EARSHOT_RADIUS) * 100), 8, 100) : 0;
+            const gain = inEarshot ? Math.round(attenuationGain(dist, EARSHOT_RADIUS) * 100) : 0;
             return { ...p, distance: dist, inEarshot, gain };
           })
           .sort((a, b) => a.distance - b.distance);

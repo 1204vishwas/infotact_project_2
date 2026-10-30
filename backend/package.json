@@ -5,7 +5,8 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "audit": "node scripts/audit-benchmark.js"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",

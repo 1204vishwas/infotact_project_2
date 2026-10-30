@@ -1,9 +1,29 @@
-@"
+# Dependencies
 node_modules/
 **/node_modules/
+
+# Environment files (never commit secrets)
 .env
 **/.env
+!**/.env.example
+
+# Build output
 dist/
 **/dist/
 .vite/
-"@ | Set-Content .gitignore
+**/.vite/
+
+# Test / tooling output
+coverage/
+**/coverage/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.local

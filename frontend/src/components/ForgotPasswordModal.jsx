@@ -6,23 +6,33 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
 
+  const [error, setError] = useState('');
+
   if (!isOpen) return null;
 
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!email) return;
 
+    const cleanEmail = email.toLowerCase().trim();
+    if (!cleanEmail.endsWith('@gmail.com')) {
+      setError('Password recovery is only available for registered Gmail accounts (@gmail.com).');
+      return;
+    }
+
+    setError('');
     setIsLoading(true);
     setTimeout(() => {
       setIsLoading(false);
       setIsSubmitted(true);
-      showToast('Spatial security recovery link sent to ' + email, 'success');
+      showToast('Spatial security recovery link sent to ' + cleanEmail, 'success');
     }, 700);
   };
 
   const handleReset = () => {
     setIsSubmitted(false);
     setEmail('');
+    setError('');
     onClose();
   };
 
@@ -43,19 +53,29 @@ export default function ForgotPasswordModal({ isOpen, onClose, showToast }) {
             </div>
             <h3 className="text-xl font-bold text-white mb-1.5">Reset Spatial Password</h3>
             <p className="text-xs text-slate-400 mb-6 leading-relaxed">
-              Enter the work email associated with your ProxiSpeak avatar account. We will send you a one-time credential reset link.
+              Enter the Gmail address associated with your ProxiSpeak avatar account. We will send you a one-time credential reset link.
             </p>
+
+            {error && (
+              <div className="mb-4 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs">
+                {error}
+              </div>
+            )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-                  Infotact Work Email
+                <label className="block text-xs font-semibold text-slate-300 mb-1.5 flex items-center justify-between">
+                  <span>Registered Gmail Address</span>
+                  <span className="text-[10px] text-indigo-400 font-mono">@gmail.com</span>
                 </label>
                 <input
                   type="email"
                   value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="name@infotact.in"
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setError('');
+                  }}
+                  placeholder="yourname@gmail.com"
                   required
                   className="w-full px-3.5 py-2.5 bg-slate-950 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                 />

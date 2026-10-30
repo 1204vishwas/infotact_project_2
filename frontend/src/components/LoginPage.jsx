@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Mail, Lock, Eye, EyeOff, LogIn, ArrowRight, Sparkles, AlertCircle, CheckCircle2, Shield, History, UserRound } from 'lucide-react';
+import SocialAuthModal, { GoogleLogo, FacebookLogo } from './SocialAuthModal';
 
 export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForgotPassword, showToast, restoredSession, onResumeSession, onClearSession }) {
   const [identifier, setIdentifier] = useState('');
@@ -8,12 +9,19 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
+  const [isSocialModalOpen, setIsSocialModalOpen] = useState(false);
+  const [socialProvider, setSocialProvider] = useState('google');
 
   const demoAccounts = [
-    { name: 'Dr. Aris (Audio Eng)', email: 'aris@infotact.in', pass: 'password123', color: '#6366f1' },
-    { name: 'Priya (WebRTC Dev)', email: 'priya@infotact.in', pass: 'password123', color: '#10b981' },
-    { name: 'Rohan (Product Lead)', email: 'rohan@infotact.in', pass: 'password123', color: '#f59e0b' }
+    { name: 'Dr. Aris (Audio Eng)', email: 'aris.thorne@gmail.com', pass: 'password123', color: '#6366f1' },
+    { name: 'Priya (WebRTC Dev)', email: 'priya.sharma@gmail.com', pass: 'password123', color: '#10b981' },
+    { name: 'Rohan (Product Lead)', email: 'rohan.mehta@gmail.com', pass: 'password123', color: '#f59e0b' }
   ];
+
+  const handleOpenSocial = (provider) => {
+    setSocialProvider(provider);
+    setIsSocialModalOpen(true);
+  };
 
   const handleDemoFill = (acc) => {
     setIdentifier(acc.email);
@@ -28,6 +36,13 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
 
     if (!identifier.trim() || !password) {
       setErrorMessage('Please fill in both your email/username and password.');
+      return;
+    }
+
+    const cleanId = identifier.trim().toLowerCase();
+    // Enforce that email identifiers must be a Gmail account (@gmail.com)
+    if (cleanId.includes('@') && !cleanId.endsWith('@gmail.com')) {
+      setErrorMessage('Only Gmail accounts (@gmail.com) are permitted. Please use your personal or work @gmail.com address.');
       return;
     }
 
@@ -54,7 +69,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
         onLoginSuccess(data.user, data.token);
       } else {
         // Fallback demo support in case backend is offline or credentials differ
-        if (identifier.toLowerCase().includes('infotact.in') && password === 'password123') {
+        if (identifier.toLowerCase().includes('gmail.com') && password === 'password123') {
           const fallbackUser = {
             id: 'demo_' + Date.now(),
             name: identifier.split('@')[0].toUpperCase(),
@@ -76,11 +91,12 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
       console.warn('Network / API error, using intelligent offline authentication fallback:', err);
       // Seamless offline fallback for smooth local testing
       if (password.length >= 6) {
+        const fallbackEmail = cleanId.includes('@') ? cleanId : `${cleanId}@gmail.com`;
         const fallbackUser = {
           id: 'user_' + Date.now(),
-          name: identifier.includes('@') ? identifier.split('@')[0] : identifier,
-          email: identifier.includes('@') ? identifier : `${identifier}@infotact.in`,
-          username: identifier.includes('@') ? identifier.split('@')[0] : identifier,
+          name: cleanId.includes('@') ? cleanId.split('@')[0] : cleanId,
+          email: fallbackEmail,
+          username: cleanId.includes('@') ? cleanId.split('@')[0] : cleanId,
           role: 'Audio Engineer',
           avatarColor: '#6366f1',
           department: 'Infotact Virtual Lab',
@@ -112,7 +128,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
             Welcome to ProxiSpeak
           </h2>
           <p className="text-xs text-slate-400 mt-1.5">
-            Log in to step into your spatial 2D audio workspace
+            Log in using your Gmail account or social credentials
           </p>
         </div>
 
@@ -165,14 +181,36 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
             </p>
           </div>
         )}
+        {/* Social Authentication: Google & Facebook */}
+        <div className="mb-5">
+          <div className="grid grid-cols-2 gap-2.5">
+            <button
+              type="button"
+              onClick={() => handleOpenSocial('google')}
+              className="flex items-center justify-center space-x-2 py-2.5 px-3 bg-white hover:bg-slate-100 text-slate-800 rounded-xl text-xs font-bold transition-all shadow-md hover:shadow-indigo-500/10 cursor-pointer active:scale-98"
+            >
+              <GoogleLogo className="w-4 h-4" />
+              <span>Google</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => handleOpenSocial('facebook')}
+              className="flex items-center justify-center space-x-2 py-2.5 px-3 bg-[#1877F2] hover:bg-[#166fe5] text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-[#1877F2]/25 cursor-pointer active:scale-98"
+            >
+              <FacebookLogo className="w-4 h-4" />
+              <span>Facebook</span>
+            </button>
+          </div>
+        </div>
 
         {/* Demo Accounts Quick-Fill bar */}
-        <div className="mb-6 p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
+        <div className="mb-5 p-3 rounded-xl bg-slate-950/70 border border-slate-800/80">
           <div className="flex items-center justify-between mb-2">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-              Quick 1-Click Demo Login:
+              Quick 1-Click Demo (Gmail):
             </span>
-            <span className="text-[10px] text-cyan-400">Auto-fill</span>
+            <span className="text-[10px] text-cyan-400 font-mono">@gmail.com</span>
           </div>
           <div className="grid grid-cols-3 gap-2">
             {demoAccounts.map((acc, index) => (
@@ -180,7 +218,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
                 key={index}
                 type="button"
                 onClick={() => handleDemoFill(acc)}
-                className="flex flex-col items-center p-2 rounded-lg bg-slate-900 hover:bg-indigo-950/50 border border-slate-800 hover:border-indigo-500/40 transition-all text-center group"
+                className="flex flex-col items-center p-2 rounded-lg bg-slate-900 hover:bg-indigo-950/50 border border-slate-800 hover:border-indigo-500/40 transition-all text-center group cursor-pointer"
               >
                 <span
                   className="w-3 h-3 rounded-full mb-1 group-hover:scale-110 transition-transform"
@@ -197,6 +235,16 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
           </div>
         </div>
 
+        {/* Divider */}
+        <div className="relative my-4 text-center">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-slate-800" />
+          </div>
+          <span className="relative px-3 bg-slate-900 text-slate-500 text-[10px] uppercase tracking-wider">
+            Or sign in with Gmail
+          </span>
+        </div>
+
         {/* Error Notification */}
         {errorMessage && (
           <div className="mb-5 p-3 rounded-xl bg-rose-500/10 border border-rose-500/30 flex items-start space-x-2.5 text-rose-300 text-xs animate-shake">
@@ -207,11 +255,14 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Work Email or Username */}
+          {/* Gmail or Username */}
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1.5">
-              Work Email or Username
-            </label>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="block text-xs font-semibold text-slate-300">
+                Gmail Address or Username *
+              </label>
+              <span className="text-[10px] text-indigo-400 font-mono">@gmail.com</span>
+            </div>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
                 <Mail className="w-4 h-4" />
@@ -220,7 +271,7 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
                 type="text"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="priya@infotact.in or priya_dev"
+                placeholder="priya.sharma@gmail.com or username"
                 required
                 className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950/80 border border-slate-800 rounded-xl text-sm text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
               />
@@ -346,6 +397,16 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
           </p>
         </div>
       </div>
+
+      {/* Social OAuth Modal for Google & Facebook */}
+      <SocialAuthModal
+        isOpen={isSocialModalOpen}
+        onClose={() => setIsSocialModalOpen(false)}
+        provider={socialProvider}
+        mode="login"
+        onSuccess={onLoginSuccess}
+        showToast={showToast}
+      />
     </div>
   );
 }

@@ -5,11 +5,14 @@ import SignUpPage from './components/SignUpPage';
 import ProximityRadarPreview from './components/ProximityRadarPreview';
 import WorldCanvas from './components/WorldCanvas';
 import ProfilePanel from './components/ProfilePanel';
+import SessionDashboard from './components/SessionDashboard';
+import VirtualOfficeWorld from './components/VirtualOfficeWorld';
 import ForgotPasswordModal from './components/ForgotPasswordModal';
-import { CheckCircle2, AlertCircle, Info, Sparkles } from 'lucide-react';
+import { CheckCircle2, AlertCircle, Info, Sparkles, Compass } from 'lucide-react';
 
 export default function App() {
-  const [currentView, setCurrentView] = useState('login'); // 'login' | 'signup' | 'office' | 'profile'
+  // 'login' | 'signup' | 'world' | 'office' | 'dashboard' | 'profile'
+  const [currentView, setCurrentView] = useState('login');
   const [currentUser, setCurrentUser] = useState(null);
   const [sessionToken, setSessionToken] = useState(null); // stable per-tab token captured at auth time
   const [savedSession, setSavedSession] = useState(null); // { user, token } detected but NOT auto-restored
@@ -25,11 +28,7 @@ export default function App() {
     const checkBackend = async () => {
       try {
         const res = await fetch('/api/health');
-        if (res.ok) {
-          setBackendStatus('connected');
-        } else {
-          setBackendStatus('offline');
-        }
+        setBackendStatus(res.ok ? 'connected' : 'offline');
       } catch (err) {
         setBackendStatus('offline');
       }
@@ -63,6 +62,13 @@ export default function App() {
     setSavedSession(null);
   };
 
+  const showToast = (message, type = 'info') => {
+    setToast({ message, type });
+    setTimeout(() => {
+      setToast((prev) => (prev?.message === message ? null : prev));
+    }, 4000);
+  };
+
   const handleResumeSession = async () => {
     if (!savedSession) return;
     try {
@@ -78,7 +84,7 @@ export default function App() {
           setCurrentUser(freshUser);
           setSessionToken(savedSession.token);
           setSocketStatus('connecting');
-          setCurrentView('office');
+          setCurrentView('world');
           showToast(`Session resumed for ${freshUser.name || 'you'}.`, 'success');
           return;
         }
@@ -92,30 +98,26 @@ export default function App() {
     showToast('Saved session could not be validated. Please log in again.', 'error');
   };
 
-  const showToast = (message, type = 'info') => {
-    setToast({ message, type });
-    setTimeout(() => {
-      setToast((prev) => (prev?.message === message ? null : prev));
-    }, 4000);
-  };
-
-  const enterOffice = (user, token) => {
+  const enterWorkspace = (user, token) => {
     setCurrentUser(user);
-    setSessionToken(token);
-    setSocketStatus('connecting');
-    setCurrentView('office');
+    setSessionToken(token || null);
+    setSocketStatus(token ? 'connecting' : 'idle');
+    // Default to the 2D Virtual Office World for authenticated users.
+    setCurrentView('world');
   };
 
   const handleLoginSuccess = (user, token) => {
     sessionStorage.setItem('proxispeak_user', JSON.stringify(user));
     sessionStorage.setItem('proxispeak_token', token);
-    enterOffice(user, token);
+    enterWorkspace(user, token);
   };
 
   const handleSignupSuccess = (user, token) => {
-    sessionStorage.setItem('proxispeak_user', JSON.stringify(user));
-    sessionStorage.setItem('proxispeak_token', token);
-    enterOffice(user, token);
+    if (token) {
+      sessionStorage.setItem('proxispeak_user', JSON.stringify(user));
+      sessionStorage.setItem('proxispeak_token', token);
+    }
+    enterWorkspace(user, token);
   };
 
   const handleLogout = () => {
@@ -130,6 +132,16 @@ export default function App() {
   const handleAvatarChange = (color, name) => {
     if (color) setPreviewAvatarColor(color);
     if (name) setPreviewName(name);
+  };
+
+  // Guest avatar profile if entering the world without logging in
+  const guestUser = {
+    id: 'guest_' + Math.random().toString(36).substring(2, 8),
+    name: 'Guest Colleague',
+    username: 'guest_avatar',
+    role: 'Team Member',
+    avatarColor: previewAvatarColor || '#06b6d4',
+    location: [480, 320]
   };
 
   return (
@@ -162,13 +174,27 @@ export default function App() {
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 flex flex-col justify-center px-4 sm:px-6 lg:px-8 py-8 sm:py-12 max-w-7xl mx-auto w-full">
-        {currentView === 'office' ? (
+      <main className="flex-1 flex flex-col justify-center px-4 sm:px-6 lg:px-8 py-6 sm:py-8 max-w-7xl mx-auto w-full">
+        {currentView === 'world' ? (
+          /* 2D Virtual Office World (React & Canvas layer) */
+          <VirtualOfficeWorld
+            user={currentUser || guestUser}
+            onBackToDashboard={() => setCurrentView(currentUser ? 'dashboard' : 'login')}
+            showToast={showToast}
+          />
+        ) : currentView === 'office' ? (
+          /* Geospatial proximity canvas with Socket.io + Web Audio attenuation */
           <WorldCanvas
             user={currentUser}
             token={sessionToken}
             showToast={showToast}
             onStatusChange={setSocketStatus}
+          />
+        ) : currentView === 'dashboard' ? (
+          <SessionDashboard
+            user={currentUser}
+            onLogout={handleLogout}
+            onLaunchWorld={() => setCurrentView('world')}
           />
         ) : currentView === 'profile' ? (
           <ProfilePanel user={currentUser} onLogout={handleLogout} />
@@ -200,15 +226,28 @@ export default function App() {
             <div className="lg:col-span-6 w-full order-1 lg:order-2 space-y-4">
               <div className="bg-gradient-to-r from-indigo-500/10 via-cyan-500/10 to-violet-500/10 p-1 rounded-2xl border border-indigo-500/20 mb-2">
                 <div className="p-4 rounded-xl bg-slate-950/80">
-                  <div className="flex items-center space-x-2 text-xs font-semibold text-cyan-300 mb-1">
-                    <Sparkles className="w-4 h-4 text-cyan-400 animate-spin" />
-                    <span>Project 2 Architecture • Live Technology Preview</span>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center space-x-2 text-xs font-semibold text-cyan-300">
+                      <Sparkles className="w-4 h-4 text-cyan-400 animate-spin" />
+                      <span>Project 2 • Week 1 Live Deliverables</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentView('world')}
+                      className="text-[11px] font-bold text-cyan-400 hover:text-cyan-300 flex items-center space-x-1 cursor-pointer"
+                    >
+                      <span>Enter Canvas World</span>
+                      <Compass className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                   <h3 className="text-sm font-bold text-white">
                     "ProxiSpeak": Geospatial Proximity Audio Ecosystem
                   </h3>
                   <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                    Unlike rigid Zoom rooms, colleagues communicate by naturally walking over to peer clusters in a 2D overhead canvas. Distances are calculated in real time using the Socket.io world layer with Web Audio API 3D spatial pan.
+                    Unlike rigid Zoom rooms, colleagues communicate by naturally walking over to peer clusters in a
+                    2D overhead canvas. The React Canvas layer and Node.js + Socket.io server broadcast X/Y
+                    coordinates in real time, with MongoDB geospatial indexing, WebRTC signaling, and Web Audio API
+                    distance attenuation.
                   </p>
                 </div>
               </div>
@@ -226,7 +265,7 @@ export default function App() {
       </main>
 
       {/* Footer conforming to Project 2 document metadata */}
-      <footer className="border-t border-slate-900 bg-slate-950/80 py-5 px-4 sm:px-6 lg:px-8 text-xs text-slate-500">
+      <footer className="border-t border-slate-900 bg-slate-950/80 py-4 px-4 sm:px-6 lg:px-8 text-xs text-slate-500">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left">
           <div className="flex flex-col sm:flex-row items-center gap-2 sm:gap-4">
             <span className="font-bold text-slate-400">INFOTACT SOLUTIONS</span>
@@ -240,8 +279,8 @@ export default function App() {
               ISO 9001:2015 Certified
             </span>
             <span className="text-slate-600">|</span>
-            <span className="text-[11px] text-slate-400">
-              ProxiSpeak v1.0
+            <span className="text-[11px] text-slate-400 font-mono">
+              Canvas • Signaling • Redis
             </span>
           </div>
         </div>
