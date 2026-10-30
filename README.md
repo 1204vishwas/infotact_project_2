@@ -26,7 +26,7 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
 | **Week 1** | **Signaling & Movement:** Build WebSocket server to broadcast avatar $X/Y$ coordinates. Setup basic MongoDB geospatial schemas. | **World Rendering:** Build the React Canvas layer. Implement smooth keyboard/mouse avatar movement and coordinate broadcasting. | **✅ COMPLETED** |
 | **Week 2** | **Proximity Calculations:** Implement MongoDB `$near` queries to group users. Logic to only send WebRTC offer/answers to users within a 100-pixel radius. | **WebRTC Integration:** Implement standard WebRTC peer-to-peer audio connections using browser `getUserMedia`. | **✅ COMPLETED** |
 | **Mid-Project Review** | **Spatial Audit:** Prove backend accurately filters and clusters users based on geospatial coordinates under 20ms. | **Audio Check:** Demonstrate two browsers successfully establishing a WebRTC audio connection via the signaling server. | **✅ COMPLETED** |
-| **Week 3** | **Mesh Scaling:** Optimize WebRTC mesh network. Implement Redis Pub/Sub to allow scaling Socket.io across multiple Node instances. | **Dynamic Attenuation:** Hook WebRTC audio tracks into Web Audio API. Write algorithms to calculate volume drop-off based on pixel distance. | **✅ COMPLETED** |
+| **Week 3** | **Mesh Scaling:** Optimize WebRTC mesh network. Implement Redis Pub/Sub to allow scaling Socket.io across multiple Node instances. | **Dynamic Attenuation:** Hook WebRTC audio tracks into Web Audio API. Write algorithms to calculate volume drop-off based on pixel distance. | ⏳ Planned |
 | **Week 4** | **Room Persistence:** Save office layouts and furniture obstacles (which block sound) into MongoDB. | **Refine & Polish:** Add 3D audio panning (stereo separation). Ensure Canvas animations render at a steady 60 FPS. | ⏳ Planned |
 | **Final Review** | Highly scalable, stateful geospatial server managing complex P2P routing logic. | Immersive, physics-aware communication platform demonstrating advanced browser audio manipulation. | 🎯 Target |
 
@@ -88,14 +88,6 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
    - **Interactive Social OAuth Dialog (`SocialAuthModal.jsx`):** High-fidelity Google and Facebook account picker modals with Gmail validation.
    - **Password Security & JWT:** `bcryptjs` password hashing with salt rounds and 7-day signed JWT tokens.
    - **Pre-seeded Demo Accounts:** 1-click demo logins (*Dr. Aris Thorne*, *Priya Sharma*, *Rohan Mehta*) updated with `@gmail.com` addresses.
-
-### 🔀 Dual Realtime Layers (both preserved)
-The merged application keeps **both** realtime experiences behind one backend:
-1. **Virtual Office World (`VirtualOfficeWorld.jsx`)** — the Week 1 React Canvas layer with `join-space` / `avatar-move` / `webrtc-*` signaling, the strict 100px WebRTC gatekeeper, MongoDB `$near` pods, and the spatial audit tooling.
-2. **2D Canvas World (`WorldCanvas.jsx`)** — the Redis-ready `world:*` coordinate channel with `useWorldSocket` / `useWebRTC`, Web Audio API distance attenuation, proximity groups, and the saved-session resume flow.
-3. **Shared Socket.io server** — `backend/server.js` initializes **both** `initWorldSocket(io)` and `initSignalingServer(io)` on the same HTTP server, and mounts `/api/auth`, `/api/world`, and `/api/spatial`.
-4. **Optional Redis Pub/Sub scaling** — when `REDIS_URL` is set, the server attaches `@socket.io/redis-adapter` using `ioredis`; if Redis is unavailable it logs a warning and falls back to the in-memory adapter. No Redis is required for local development.
-5. **Authentication** — `backend/models/User.js` keeps the full Week 2 spatial schema and statics (`findNearby`, `findWithinBox`, `groupUsersByProximity`) while remaining compatible with the Week 1 auth routes.
 
 ---
 
@@ -199,14 +191,14 @@ Executed using high-resolution nanosecond timers (`process.hrtime.bigint()`):
 
 ## 🗄️ 6. MongoDB Database & Compass Integration (`proxify`)
 
-The application connects to your local MongoDB server on port `27017` using the **`proxify`** database by default:
-- **Connection URI:** `mongodb://localhost:27017/proxify` (override with `MONGODB_URI` in `backend/.env`).
+The application connects to your local MongoDB server on port `27017` using the **`proxify`** database:
+- **Connection URI:** `mongodb://localhost:27017/proxify`
 - **MongoDB Compass Favorite:** Configured under Saved Connections / Favorites as **`proxify`**.
 - **Collections in `proxify`:**
   - `users`: User profiles with 2D planar geospatial indexes.
   - `clusters`: Spatial cluster metadata (`name: "proxify"`).
   - `officespaces`: Office zones, furniture coordinates, and spawn points.
-- **Environment safety:** `backend/.env` is **not tracked** by Git. Copy `backend/.env.example` to `backend/.env` and fill in `MONGODB_URI`, `JWT_SECRET`, and (optionally) `REDIS_URL`.
+- **Environment safety:** `backend/.env` and all `node_modules/` directories are local and ignored by Git. Copy `backend/.env.example` to `backend/.env` and fill in real values; never commit secrets.
 
 ---
 
@@ -224,41 +216,33 @@ project_2/
 │   ├── vite.config.js        # Vite config with /api and WebSocket proxying
 │   ├── public/               # Static assets & favicons
 │   └── src/
-│       ├── App.jsx           # Main controller for auth + world/dashboard/profile views
+│       ├── App.jsx           # Main controller & view transition manager
 │       ├── main.jsx          # React DOM root entry
 │       ├── index.css         # Tailwind styles & radar pulse keyframes
-│       ├── hooks/
-│       │   ├── useWorldSocket.js # world:* Socket.io channel (JWT, presence, proximity)
-│       │   └── useWebRTC.js      # WebRTC mesh + Web Audio distance attenuation
 │       ├── utils/
-│       │   └── webrtcManager.js  # WebRTC P2P manager, getUserMedia, Web Audio API & loopback
+│       │   └── webrtcManager.js         # WebRTC P2P manager, getUserMedia, Web Audio API & loopback
 │       └── components/
-│           ├── VirtualOfficeWorld.jsx   # Week 1 Canvas layer, 100px gatekeeper & pods
-│           ├── WorldCanvas.jsx          # 2D proximity canvas (world:* + Web Audio)
+│           ├── VirtualOfficeWorld.jsx   # 2D Canvas Layer, 100px proximity gatekeeper & pods
 │           ├── SpatialAuditModal.jsx    # Mid-Project Review Spatial Audit Inspector (< 20ms)
 │           ├── AudioWaveformVisualizer.jsx # HTML5 Canvas audio oscilloscope & FFT spectrum visualizer
-│           ├── Navbar.jsx               # Infotact branding & world/dashboard switcher
-│           ├── LoginPage.jsx            # Sign-in form with Gmail, Social OAuth & session resume
+│           ├── Navbar.jsx               # Infotact branding & world switcher
+│           ├── LoginPage.jsx            # Sign-in form with Gmail & Social OAuth
 │           ├── SignUpPage.jsx           # Avatar registration with live color picker
 │           ├── ProximityRadarPreview.jsx# 2D Canvas spatial audio proximity engine
 │           ├── SessionDashboard.jsx     # Post-login authenticated status card
-│           ├── ProfilePanel.jsx         # Saved-session profile panel
 │           ├── SocialAuthModal.jsx      # Google & Facebook authentication dialogs
 │           └── ForgotPasswordModal.jsx  # Password recovery dialog
 │
 └── backend/                  # ⚙️ Node.js, Express, Socket.io, MongoDB
-    ├── server.js             # HTTP + Socket.io entry, both realtime layers, Redis adapter
-    ├── package.json          # Express, Socket.io, Mongoose, JWT, bcryptjs, ioredis
-    ├── .env.example          # Safe template for PORT, MONGODB_URI, JWT_SECRET, REDIS_URL
+    ├── server.js             # HTTP & Socket.io server entry point (port 5000)
+    ├── package.json          # Express, Socket.io, Mongoose, JWT, bcryptjs, cors
+    ├── .env.example          # Safe template for PORT, MONGODB_URI, JWT_SECRET
     ├── services/
     │   └── spatialAudit.js   # High-precision nanosecond benchmarking & spatial verification
     ├── scripts/
     │   └── audit-benchmark.js# Automated CLI spatial audit test runner
     ├── sockets/
     │   └── signaling.js      # Strict 100px WebRTC gatekeeper & real-time movement
-    ├── realtime/
-    │   ├── worldSocket.js    # world:* coordinate broadcasting & hearing-radius signaling
-    │   └── worldState.js     # In-memory world state, bounds & sanitization
     ├── models/
     │   ├── User.js           # 2D Cartesian index, $near helpers & audio pod clustering
     │   └── OfficeSpace.js    # 2D office layout zones and obstacles schema
@@ -266,7 +250,6 @@ project_2/
     │   └── auth.js           # JWT authentication middleware
     └── routes/
         ├── auth.js           # Gmail-only auth, Google/Facebook OAuth endpoints
-        ├── world.js          # World bounds, online players, nearby peers & benchmark
         └── spatial.js        # Proximity pods, $near queries, 100px verification & /audit
 ```
 
@@ -292,25 +275,9 @@ project_2/
 | `get-proximity-groups`| Client ➔ Server| `{ radius }` | Requests live MongoDB `$near` clustering computation |
 | `proximity-groups-updated`| Server ➔ Client| `{ clusters, soloUsers, totalClusters, totalUsers }` | Broadcasts updated proximity audio pods |
 | `user-left` | Server ➔ Peers | `{ socketId, userId, name }` | Cleans up avatar when disconnected |
-| `world:join` | Client ➔ Server | `{ id, name, username, role, department, avatarColor, x, y }` | Joins the 2D Canvas World (`world:*` channel) |
-| `world:state` | Server ➔ Client | `{ selfId, bounds, players: [...] }` | Hydrates the joining client with the current world |
-| `world:move` | Client ➔ Server | `{ x, y }` | Broadcasts canvas coordinates (sanitized server-side) |
-| `world:player-moved` | Server ➔ Peers | `{ id, x, y }` | Relays peer coordinates for lerp rendering |
-| `world:player-joined` | Server ➔ Peers | `{ id, name, role, x, y, ... }` | Announces a new canvas avatar |
-| `world:player-left` | Server ➔ Peers | `{ id }` | Removes a departed canvas avatar |
-| `world:status` | Client ➔ Server | `{ status }` | Updates mic/meeting status |
-| `world:presence` | Server ➔ All | `{ count }` | Live online avatar count |
-| `world:proximity-update` | Server ➔ All | `{ players: [...] }` | Feeds proximity group rendering |
-| `world:offer` | Bidirectional | `{ target, offer }` | WebRTC offer, only relayed within the 100px hearing radius |
-| `world:answer` | Bidirectional | `{ target, answer }` | WebRTC answer, only relayed for an accepted nearby offer |
-| `world:ice-candidate` | Bidirectional | `{ target, candidate }` | ICE candidate, only relayed within the hearing radius |
 
 ### REST Endpoints
-- `GET /api/health` — Probes backend status, MongoDB connection, Redis configuration, and active modules.
-- `GET /api/world/bounds` — Returns the 2D canvas world dimensions and padding.
-- `GET /api/world/online` — Returns the current in-memory online avatar count and players.
-- `GET /api/world/nearby?x=...&y=...&radius=100` — Returns nearby canvas peers with distance and gain.
-- `GET /api/world/benchmark` — Runs the world proximity benchmark.
+- `GET /api/health` — Probes backend status, MongoDB connection, and active modules.
 - `GET /api/spatial/groups?radius=100` — Computes and returns MongoDB `$near` audio pods and centroids.
 - `POST /api/spatial/verify-proximity` — Verifies two sets of coordinates against the 100-pixel WebRTC gatekeeper limit (`fromCoords`, `toCoords`).
 - `GET /api/spatial/nearby?x=...&y=...&radius=100` — Executes native MongoDB `$near` query returning avatars within radius with WebRTC range status.
@@ -324,40 +291,25 @@ project_2/
 
 ## 🏃 8. Running the Application
 
-### 1. Install Dependencies
-```bash
-npm run install:all
-```
-
-### 2. Configure the Backend
-```bash
-cp backend/.env.example backend/.env
-# Edit backend/.env and set MONGODB_URI + JWT_SECRET.
-# REDIS_URL is optional; leave it empty for the in-memory Socket.io adapter.
-```
-
-### 3. Start Frontend (React + Vite)
+### 1. Start Frontend (React + Vite)
 ```bash
 cd frontend
 npm run dev
 ```
 Accessible at: **[http://localhost:3000](http://localhost:3000)**
 
-### 4. Start Backend (Express + Socket.io + MongoDB)
+### 2. Start Backend (Express + Socket.io + MongoDB)
 ```bash
 cd backend
 npm start
 ```
 Accessible at: **[http://localhost:5000](http://localhost:5000)**
 
-### 5. Run Both from Workspace Root
+### 3. Run Both from Workspace Root
 ```bash
 npm run frontend
 npm run backend
 ```
-
-> [!NOTE]
-> `backend/.env` and all `node_modules/` directories are ignored by Git. If Redis is not running, the server still starts with the in-memory adapter; the Redis Pub/Sub adapter is only enabled when `REDIS_URL` is set and reachable.
 
 ---
 
@@ -392,16 +344,6 @@ npm run backend
      -H "Content-Type: application/json" \
      -d "{\"fromCoords\": [200, 200], \"toCoords\": [260, 240]}"
    ```
-
-### C. Testing the Merged Dual-World Experience
-1. **Log in** (or use a demo Gmail account). After authentication the app opens the **2D World** (`VirtualOfficeWorld`).
-2. Use the navbar to switch between:
-   - **2D World** — Week 1 canvas, proximity pods, WebRTC gatekeeper, spatial audit.
-   - **Canvas** — the `world:*` proximity canvas with Web Audio distance attenuation.
-   - **Dashboard** — the authenticated session dashboard.
-   - **Profile** — the saved-session profile panel.
-3. **Session resume:** reload the page. The login screen shows a **Saved Session** banner instead of auto-logging in. Click **Resume** to validate the JWT via `GET /api/auth/me`; an invalid/expired token is cleared.
-4. **Redis fallback:** start the backend without `REDIS_URL` and confirm `/api/health` reports `redis: "disabled"`. Set `REDIS_URL=redis://127.0.0.1:6379`, restart, and confirm the log reports the Redis adapter enabled (or a graceful in-memory fallback warning if Redis is unreachable).
 
 ---
 

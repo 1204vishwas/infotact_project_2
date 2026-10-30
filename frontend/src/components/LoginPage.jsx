@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { Mail, Lock, Eye, EyeOff, LogIn, ArrowRight, Sparkles, AlertCircle, CheckCircle2, Shield, History, UserRound } from 'lucide-react';
+import { Mail, Lock, Eye, EyeOff, LogIn, ArrowRight, Sparkles, AlertCircle, CheckCircle2, Shield } from 'lucide-react';
 import SocialAuthModal, { GoogleLogo, FacebookLogo } from './SocialAuthModal';
 
-export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForgotPassword, showToast, restoredSession, onResumeSession, onClearSession }) {
+export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForgotPassword, showToast }) {
   const [identifier, setIdentifier] = useState('');
   const [password, setPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(true);
@@ -132,55 +132,6 @@ export default function LoginPage({ onLoginSuccess, onSwitchToSignup, onOpenForg
           </p>
         </div>
 
-        {/* Saved-session resume banner — a previous login is NEVER auto-restored */}
-        {restoredSession && restoredSession.user && (
-          <div className="mb-6 p-3 rounded-xl bg-indigo-950/40 border border-indigo-500/30">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <span className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
-                <History className="w-3.5 h-3.5" />
-                Saved Session
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  onClearSession && onClearSession();
-                }}
-                className="text-[10px] text-slate-400 hover:text-rose-300 transition-colors"
-              >
-                Clear
-              </button>
-            </div>
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center space-x-2.5 min-w-0">
-                <span
-                  className="w-8 h-8 rounded-full shrink-0 flex items-center justify-center text-xs font-bold text-slate-950"
-                  style={{ backgroundColor: restoredSession.user.avatarColor || '#6366f1' }}
-                >
-                  {(restoredSession.user.name || 'U').charAt(0).toUpperCase()}
-                </span>
-                <div className="min-w-0">
-                  <p className="text-xs font-semibold text-slate-200 truncate flex items-center gap-1">
-                    <UserRound className="w-3 h-3 text-slate-400" />
-                    {restoredSession.user.name}
-                  </p>
-                  <p className="text-[10px] text-slate-500 truncate font-mono">
-                    {restoredSession.user.email || restoredSession.user.username}
-                  </p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={onResumeSession}
-                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold rounded-lg shadow shadow-indigo-600/30 whitespace-nowrap transition-colors cursor-pointer"
-              >
-                Resume
-              </button>
-            </div>
-            <p className="text-[10px] text-slate-500 mt-2">
-              Sessions are restored only after validating your token. Otherwise, log in below.
-            </p>
-          </div>
-        )}
         {/* Social Authentication: Google & Facebook */}
         <div className="mb-5">
           <div className="grid grid-cols-2 gap-2.5">
