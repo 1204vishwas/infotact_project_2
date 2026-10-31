@@ -1,6 +1,6 @@
 /**
  * ProxiSpeak WebRTC Audio Manager
- * Infotact Solutions — Geospatial Proximity Audio Ecosystem
+ * Infotact Solutions - Geospatial Proximity Audio Ecosystem
  *
  * Implements standard WebRTC peer-to-peer audio connections using the browser's
  * navigator.mediaDevices.getUserMedia, Web Audio API synthetic audio test streams,

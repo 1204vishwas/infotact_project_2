@@ -272,7 +272,7 @@ module.exports = function initSignalingServer(io) {
     // 4. WebRTC SIGNALING GATEKEEPER (STRICT 100-PIXEL RADIUS LOGIC)
     // ====================================================
 
-    // Relay WebRTC Offer â€” ONLY allowed if within 100-pixel radius
+    // Relay WebRTC Offer GÇö ONLY allowed if within 100-pixel radius
     socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
       const sender = activeAvatars.get(socket.id);
       const target = activeAvatars.get(targetSocketId);
@@ -319,7 +319,7 @@ module.exports = function initSignalingServer(io) {
       });
     });
 
-    // Relay WebRTC Answer â€” ONLY allowed if within 100-pixel radius
+    // Relay WebRTC Answer GÇö ONLY allowed if within 100-pixel radius
     socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
       const callee = activeAvatars.get(socket.id);
       const caller = activeAvatars.get(targetSocketId);
@@ -365,7 +365,7 @@ module.exports = function initSignalingServer(io) {
       });
     });
 
-    // Relay ICE Candidate â€” ONLY allowed if within 100-pixel radius
+    // Relay ICE Candidate GÇö ONLY allowed if within 100-pixel radius
     socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
       const sender = activeAvatars.get(socket.id);
       const target = activeAvatars.get(targetSocketId);

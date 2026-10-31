@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Project 2: ProxiSpeak - Geospatial Proximity Audio Ecosystem (Sign Up & Login Pages)",
   "scripts": {
+    "dev": "node scripts/dev-runner.js",
+    "start": "node scripts/dev-runner.js",
+    "verify": "npm run audit && npm run audio-check",
     "backend": "npm --prefix backend start",
     "frontend": "npm --prefix frontend dev",
     "server": "npm --prefix backend start",

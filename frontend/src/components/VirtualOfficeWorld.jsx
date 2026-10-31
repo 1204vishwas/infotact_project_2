@@ -85,7 +85,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       bg: 'rgba(99, 102, 241, 0.08)',
       border: 'rgba(99, 102, 241, 0.3)',
       tagColor: '#818cf8',
-      icon: '🎧'
+      icon: 'AUDIO'
     },
     {
       id: 'engineering-bay',
@@ -97,7 +97,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       bg: 'rgba(16, 185, 129, 0.08)',
       border: 'rgba(16, 185, 129, 0.3)',
       tagColor: '#34d399',
-      icon: '💻'
+      icon: 'RTC'
     },
     {
       id: 'product-hub',
@@ -109,7 +109,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       bg: 'rgba(245, 158, 11, 0.08)',
       border: 'rgba(245, 158, 11, 0.3)',
       tagColor: '#fbbf24',
-      icon: '💡'
+      icon: 'DESIGN'
     },
     {
       id: 'lounge-pantry',
@@ -121,7 +121,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       bg: 'rgba(236, 72, 153, 0.08)',
       border: 'rgba(236, 72, 153, 0.3)',
       tagColor: '#f472b6',
-      icon: '☕'
+      icon: 'LOUNGE'
     }
   ];
 
@@ -345,7 +345,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         gain,
         timestamp: Date.now()
       });
-      showToast(`🎧 ${peer.name} entered 100px earshot (${distance}px)! WebRTC audio active (${gain}% gain).`, 'success');
+      showToast(`${peer.name} entered 100px earshot (${distance}px)! WebRTC audio active (${gain}% gain).`, 'success');
 
       if (webrtcManagerRef.current) {
         webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, maxRadius);
@@ -395,7 +395,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         distance,
         timestamp: Date.now()
       });
-      showToast(`🔇 ${peerName} moved beyond 100px radius (${distance}px). WebRTC audio disconnected.`, 'info');
+      showToast(`${peerName} moved beyond 100px radius (${distance}px). WebRTC audio disconnected.`, 'info');
 
       if (webrtcManagerRef.current) {
         webrtcManagerRef.current.closePeerConnection(peerSocketId);
@@ -449,7 +449,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           if (proximity?.distance) {
             webrtcManagerRef.current.setPeerDistance(calleeSocketId, proximity.distance, 100);
           }
-          showToast(`🎧 Connected live audio with ${calleeUser?.name}!`, 'success');
+          showToast(`Connected live audio with ${calleeUser?.name}!`, 'success');
         } catch (err) {
           console.error('[WebRTC Proximity] Failed to handle answer:', err);
         }
@@ -476,7 +476,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         distance,
         timestamp: Date.now()
       });
-      showToast(`🚫 WebRTC ${type.toUpperCase()} Blocked: ${targetName} is ${distance}px away (Exceeds ${maxRadius}px limit).`, 'error');
+      showToast(`WebRTC ${type.toUpperCase()} Blocked: ${targetName} is ${distance}px away (Exceeds ${maxRadius}px limit).`, 'error');
     });
 
     // MongoDB $near query grouping update
@@ -1029,7 +1029,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           ctx.fillStyle = '#38bdf8';
           ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText(`🎙️ ${gain}% • ${Math.round(distance)}px`, midX, midY + 3.5);
+          ctx.fillText(`GAIN ${gain}% GAIN ${Math.round(distance)}px`, midX, midY + 3.5);
         }
       });
 
@@ -1217,7 +1217,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 mt-0.5">
               <span className="text-emerald-400 font-medium">{currentZone}</span>
-              <span>•</span>
+              <span>GAIN</span>
               <span className="font-mono text-slate-400">
                 Coordinates: [{coords.x}, {coords.y}]
               </span>
@@ -1408,7 +1408,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             </div>
           ) : (
             <div className="bg-slate-900/80 backdrop-blur-md px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg border border-slate-800 text-[10px] sm:text-[11px] text-slate-400 font-mono">
-              🎧 Walk within 100px of a teammate to chat
+              Walk within 100px of a teammate to chat
             </div>
           )}
         </div>

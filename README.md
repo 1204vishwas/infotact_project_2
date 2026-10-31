@@ -387,24 +387,50 @@ project_2/
 
 ## 🏃 8. Running the Application
 
-### 1. Start Frontend (React + Vite)
+### 🚀 1. Run the Entire Project (Backend + Frontend + Automated Verifications)
+Run a single command from the workspace root:
 ```bash
-cd frontend
 npm run dev
 ```
-Accessible at: **[http://localhost:3000](http://localhost:3000)**
+This automatically:
+1. **Executes the Automated Verification Suite:**
+   - ⚡ **Spatial Audit Latency Benchmark** (`<20ms` SLA compliance verification).
+   - 🎧 **Two-Browser WebRTC Audio Check Simulation** (P2P SDP exchange, dynamic distance audio attenuation, and strict 100px proximity gatekeeper).
+2. **Launches Both Services Concurrently:**
+   - **Backend Server:** **[http://localhost:5000](http://localhost:5000)** (Express + Socket.io Signaling + MongoDB)
+   - **Frontend App:** **[http://localhost:3000](http://localhost:3000)** (React 19 + HTML5 Canvas 2D World)
 
-### 2. Start Backend (Express + Socket.io + MongoDB)
-```bash
-cd backend
-npm start
-```
-Accessible at: **[http://localhost:5000](http://localhost:5000)**
+*(Note: To launch without the pre-flight verification suite, use `npm run dev -- --skip-verify`)*
 
-### 3. Run Both from Workspace Root
+---
+
+### 2. Run Services Individually
+Open two terminals from the project root.
+
+- **Terminal 1 — Frontend:**
+  ```bash
+  cd frontend
+  npm run dev
+  ```
+- **Terminal 2 — Backend:**
+  ```bash
+  cd backend
+  npm run dev
+  ```
+The backend runs in watch mode. Do not start the combined root command at the same time; it also starts both services and would occupy the same ports.
+
+---
+
+### 3. Run Standalone Verification Suites
 ```bash
-npm run frontend
-npm run backend
+# Run both automated verifications back-to-back
+npm run verify
+
+# Run Spatial Audit Benchmark only (<20ms SLA proof)
+npm run audit
+
+# Run Two-Browser WebRTC Audio Check only
+npm run audio-check
 ```
 
 ---
