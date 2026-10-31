@@ -94,6 +94,41 @@ module.exports = function initSignalingServer(io) {
 
         console.log(`[ProxiSpeak] User '${name}' (${role}) joined space at [${location.join(', ')}]. Total: ${activeAvatars.size}`);
 
+        // 3. Evaluate initial proximity with all active avatars upon joining
+        const initialInRange = new Set();
+        for (const [peerSocketId, peerAvatar] of activeAvatars.entries()) {
+          if (peerSocketId === socket.id) continue;
+          const distance = calculateDistance(avatarProfile.location, peerAvatar.location);
+          if (distance <= WEBRTC_PROXIMITY_RADIUS) {
+            initialInRange.add(peerSocketId);
+            const peerSet = inRangePeerPairs.get(peerSocketId) || new Set();
+            peerSet.add(socket.id);
+            inRangePeerPairs.set(peerSocketId, peerSet);
+
+            const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
+            console.log(`[Proximity on Join] '${name}' joined within 100px of '${peerAvatar.name}' (${distance.toFixed(1)}px). Initializing WebRTC handshake.`);
+
+            // Notify newly joined avatar
+            socket.emit('proximity-peer-entered', {
+              peer: peerAvatar,
+              distance: Math.round(distance),
+              maxRadius: WEBRTC_PROXIMITY_RADIUS,
+              gain,
+              shouldInitiateOffer: socket.id < peerSocketId
+            });
+
+            // Notify peer
+            io.to(peerSocketId).emit('proximity-peer-entered', {
+              peer: avatarProfile,
+              distance: Math.round(distance),
+              maxRadius: WEBRTC_PROXIMITY_RADIUS,
+              gain,
+              shouldInitiateOffer: peerSocketId < socket.id
+            });
+          }
+        }
+        inRangePeerPairs.set(socket.id, initialInRange);
+
         // Update MongoDB presence
         if (userData?.id && !userData.id.startsWith('guest_')) {
           pendingDbUpdates.set(userData.id, location);
@@ -146,6 +181,10 @@ module.exports = function initSignalingServer(io) {
             const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
             console.log(`[Proximity Transition] '${peerAvatar.name}' ENTERED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). WebRTC Offer Allowed.`);
 
+            const peerSet = inRangePeerPairs.get(peerSocketId) || new Set();
+            peerSet.add(socket.id);
+            inRangePeerPairs.set(peerSocketId, peerSet);
+
             // Notify moving avatar to initiate or accept offer
             socket.emit('proximity-peer-entered', {
               peer: peerAvatar,
@@ -163,11 +202,28 @@ module.exports = function initSignalingServer(io) {
               gain,
               shouldInitiateOffer: peerSocketId < socket.id
             });
+          } else {
+            // Continuous dynamic audio attenuation update while staying within 100px earshot
+            const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
+            socket.emit('proximity-distance-update', {
+              peerSocketId,
+              distance: Math.round(distance),
+              gain
+            });
+            io.to(peerSocketId).emit('proximity-distance-update', {
+              peerSocketId: socket.id,
+              distance: Math.round(distance),
+              gain
+            });
           }
         } else {
           // Transition: Peer just EXITED 100-pixel radius!
           if (currentInRange.has(peerSocketId)) {
             console.log(`[Proximity Transition] '${peerAvatar.name}' EXITED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). Closing WebRTC audio.`);
+
+            const peerSet = inRangePeerPairs.get(peerSocketId) || new Set();
+            peerSet.delete(socket.id);
+            inRangePeerPairs.set(peerSocketId, peerSet);
 
             socket.emit('proximity-peer-left', {
               peerSocketId,
@@ -216,7 +272,7 @@ module.exports = function initSignalingServer(io) {
     // 4. WebRTC SIGNALING GATEKEEPER (STRICT 100-PIXEL RADIUS LOGIC)
     // ====================================================
 
-    // Relay WebRTC Offer â€” ONLY allowed if within 100-pixel radius
+    // Relay WebRTC Offer GÇö ONLY allowed if within 100-pixel radius
     socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
       const sender = activeAvatars.get(socket.id);
       const target = activeAvatars.get(targetSocketId);
@@ -263,7 +319,7 @@ module.exports = function initSignalingServer(io) {
       });
     });
 
-    // Relay WebRTC Answer â€” ONLY allowed if within 100-pixel radius
+    // Relay WebRTC Answer GÇö ONLY allowed if within 100-pixel radius
     socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
       const callee = activeAvatars.get(socket.id);
       const caller = activeAvatars.get(targetSocketId);
@@ -309,7 +365,7 @@ module.exports = function initSignalingServer(io) {
       });
     });
 
-    // Relay ICE Candidate â€” ONLY allowed if within 100-pixel radius
+    // Relay ICE Candidate GÇö ONLY allowed if within 100-pixel radius
     socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
       const sender = activeAvatars.get(socket.id);
       const target = activeAvatars.get(targetSocketId);

@@ -1,10 +1,10 @@
 /**
  * ProxiSpeak WebRTC Audio Manager
- * Infotact Solutions — Geospatial Proximity Audio Ecosystem
+ * Infotact Solutions - Geospatial Proximity Audio Ecosystem
  *
  * Implements standard WebRTC peer-to-peer audio connections using the browser's
- * navigator.mediaDevices.getUserMedia and Web Audio API for spatial distance
- * attenuation and Canvas API visualization.
+ * navigator.mediaDevices.getUserMedia, Web Audio API synthetic audio test streams,
+ * and Web Audio API for spatial distance attenuation and Canvas API visualization.
  */
 
 const RTC_CONFIG = {
@@ -23,7 +23,11 @@ export class WebRTCAudioManager {
     this.localSource = null;
     this.isMicMuted = false;
     this.isMicActive = false;
+    this.isSyntheticActive = false;
     this.permissionState = 'prompt'; // 'prompt' | 'granted' | 'denied' | 'unsupported'
+
+    // Synthetic audio nodes
+    this.syntheticNodes = null;
 
     // Peer connections map: socketId -> { pc, stream, audioElement, gainNode, analyser, connectionState, distance, gain }
     this.peers = new Map();
@@ -83,18 +87,20 @@ export class WebRTCAudioManager {
         video: false
       });
 
+      // If synthetic audio was running, stop it
+      if (this.isSyntheticActive) {
+        this.stopSyntheticAudio(false);
+      }
+
       this.localStream = stream;
       this.isMicActive = true;
+      this.isSyntheticActive = false;
       this.permissionState = 'granted';
 
-      // Attach audio tracks to any existing peer connections
-      this.peers.forEach(({ pc }) => {
-        if (pc.signalingState !== 'closed') {
-          stream.getAudioTracks().forEach((track) => {
-            pc.addTrack(track, stream);
-          });
-        }
-      });
+      const audioTrack = stream.getAudioTracks()[0];
+      if (audioTrack) {
+        this.replaceLocalTrackAcrossPeers(audioTrack);
+      }
 
       // Setup Web Audio API analyser for Canvas visualization
       this.setupLocalAudioAnalyser(stream);
@@ -105,10 +111,10 @@ export class WebRTCAudioManager {
       console.error('[WebRTC Audio] getUserMedia error:', err);
       if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
         this.permissionState = 'denied';
-        this.showToast('Microphone permission was denied. Please allow microphone in browser settings.', 'error');
+        this.showToast('Microphone permission was denied. Try enabling the Synthetic Audio Test Tone.', 'error');
       } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
         this.permissionState = 'denied';
-        this.showToast('No microphone detected on your system.', 'error');
+        this.showToast('No microphone hardware detected. Try enabling Synthetic Audio Test Tone.', 'error');
       } else {
         this.permissionState = 'prompt';
         this.showToast(`Microphone error: ${err.message}`, 'error');
@@ -118,12 +124,129 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Configure Web Audio API AnalyserNode for local microphone stream
+   * Start synthetic audio test tone generator (440 Hz vocal formant simulator).
+   * Generates a real MediaStream with real audio frames via Web Audio API.
+   * Perfect for demonstrating two-browser audio transmission without physical microphone dependencies.
+   */
+  startSyntheticAudio(frequency = 440) {
+    try {
+      const audioCtx = this.getAudioContext();
+      if (!audioCtx) return null;
+
+      this.stopSyntheticAudio(false);
+
+      const dest = audioCtx.createMediaStreamDestination();
+      const osc = audioCtx.createOscillator();
+      const lfo = audioCtx.createOscillator();
+      const lfoGain = audioCtx.createGain();
+      const filter = audioCtx.createBiquadFilter();
+      const gainNode = audioCtx.createGain();
+
+      // Vocal formant modulation: subtle 5 Hz vibrato
+      lfo.frequency.setValueAtTime(5.2, audioCtx.currentTime);
+      lfoGain.gain.setValueAtTime(6.0, audioCtx.currentTime);
+      lfo.connect(lfoGain);
+      lfoGain.connect(osc.frequency);
+
+      // Main vocal tone oscillator
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(frequency, audioCtx.currentTime);
+
+      // Low-pass filter to sound warm and vocal-like
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(1100, audioCtx.currentTime);
+      filter.Q.setValueAtTime(3.5, audioCtx.currentTime);
+
+      // Safe master gain for transmission
+      gainNode.gain.setValueAtTime(0.35, audioCtx.currentTime);
+
+      osc.connect(filter);
+      filter.connect(gainNode);
+      gainNode.connect(dest);
+
+      osc.start();
+      lfo.start();
+
+      this.syntheticNodes = { osc, lfo, lfoGain, filter, gainNode, dest };
+      this.localStream = dest.stream;
+      this.isMicActive = true;
+      this.isSyntheticActive = true;
+
+      const audioTrack = dest.stream.getAudioTracks()[0];
+      if (audioTrack) {
+        this.replaceLocalTrackAcrossPeers(audioTrack);
+      }
+
+      this.setupLocalAudioAnalyser(dest.stream);
+
+      this.showToast(`Synthetic Voice Tone (${frequency}Hz) active! Transmitting over WebRTC mesh.`, 'success');
+      return dest.stream;
+    } catch (err) {
+      console.error('[WebRTC Audio] Error starting synthetic test audio:', err);
+      this.showToast(`Failed to generate synthetic audio: ${err.message}`, 'error');
+      return null;
+    }
+  }
+
+  /**
+   * Stop synthetic audio test tone generator
+   */
+  stopSyntheticAudio(notify = true) {
+    if (this.syntheticNodes) {
+      try {
+        this.syntheticNodes.osc.stop();
+        this.syntheticNodes.lfo.stop();
+        this.syntheticNodes.osc.disconnect();
+        this.syntheticNodes.lfo.disconnect();
+        this.syntheticNodes.filter.disconnect();
+        this.syntheticNodes.gainNode.disconnect();
+      } catch (e) {}
+      this.syntheticNodes = null;
+    }
+
+    if (this.isSyntheticActive) {
+      this.isSyntheticActive = false;
+      this.isMicActive = false;
+      this.localStream = null;
+      if (notify) this.showToast('Synthetic audio tone stopped.', 'info');
+    }
+  }
+
+  /**
+   * Seamlessly replace the local audio track across all active RTCPeerConnections
+   * without renegotiation using RTCRtpSender.replaceTrack
+   */
+  replaceLocalTrackAcrossPeers(newTrack) {
+    this.peers.forEach(({ pc }) => {
+      if (pc.signalingState !== 'closed') {
+        const senders = pc.getSenders();
+        const audioSender = senders.find((s) => s.track?.kind === 'audio' || s.track === null);
+        if (audioSender) {
+          audioSender.replaceTrack(newTrack).catch((err) => {
+            console.warn('[WebRTC P2P] Error replacing audio track:', err);
+          });
+        } else {
+          try {
+            pc.addTrack(newTrack, this.localStream);
+          } catch (e) {
+            console.warn('[WebRTC P2P] Error adding track:', e);
+          }
+        }
+      }
+    });
+  }
+
+  /**
+   * Configure Web Audio API AnalyserNode for local audio stream (mic or synth)
    */
   setupLocalAudioAnalyser(stream) {
     try {
       const audioCtx = this.getAudioContext();
       if (!audioCtx) return;
+
+      if (this.localSource) {
+        try { this.localSource.disconnect(); } catch (e) {}
+      }
 
       this.localSource = audioCtx.createMediaStreamSource(stream);
       this.localAnalyser = audioCtx.createAnalyser();
@@ -131,14 +254,14 @@ export class WebRTCAudioManager {
       this.localAnalyser.smoothingTimeConstant = 0.6;
 
       this.localSource.connect(this.localAnalyser);
-      // NOTE: Do NOT connect localAnalyser to audioCtx.destination to prevent hearing your own echo!
+      // NOTE: Do NOT connect localAnalyser to audioCtx.destination to prevent local echo loop
     } catch (err) {
       console.warn('[WebRTC Audio] Error setting up local audio analyser:', err);
     }
   }
 
   /**
-   * Toggle local microphone mute
+   * Toggle local microphone / synthetic audio mute
    */
   setMuted(muted) {
     this.isMicMuted = muted;
@@ -153,7 +276,7 @@ export class WebRTCAudioManager {
   /**
    * Create or retrieve an RTCPeerConnection for a remote peer
    */
-  createPeerConnection(peerSocketId, { onIceCandidate, onTrack, onConnectionStateChange }) {
+  createPeerConnection(peerSocketId, { onIceCandidate, onTrack, onConnectionStateChange } = {}) {
     if (this.peers.has(peerSocketId)) {
       const existing = this.peers.get(peerSocketId);
       if (existing.pc.signalingState !== 'closed') {
@@ -165,11 +288,17 @@ export class WebRTCAudioManager {
     console.log(`[WebRTC P2P] Initializing RTCPeerConnection for peer: ${peerSocketId}`);
     const pc = new RTCPeerConnection(RTC_CONFIG);
 
-    // Attach local microphone audio tracks if available
-    if (this.localStream) {
+    // Attach local audio tracks if available, otherwise add transceiver to ensure m=audio in SDP
+    if (this.localStream && this.localStream.getAudioTracks().length > 0) {
       this.localStream.getAudioTracks().forEach((track) => {
         pc.addTrack(track, this.localStream);
       });
+    } else {
+      try {
+        pc.addTransceiver('audio', { direction: 'sendrecv' });
+      } catch (err) {
+        console.warn('[WebRTC P2P] Transceiver setup warning:', err);
+      }
     }
 
     // ICE candidate gathering
@@ -214,7 +343,8 @@ export class WebRTCAudioManager {
       analyser: null,
       connectionState: 'new',
       distance: 50,
-      gain: 1.0
+      gain: 1.0,
+      stats: { bytesReceived: 0, packetsReceived: 0, bytesSent: 0, packetsSent: 0, audioLevel: 0, jitter: 0 }
     });
 
     return pc;
@@ -229,7 +359,7 @@ export class WebRTCAudioManager {
 
     peerData.stream = remoteStream;
 
-    // 1. Create dedicated HTML5 Audio element for reliable browser audio playback
+    // 1. Dedicated HTML5 Audio element for reliable browser audio playback
     const audioElement = new Audio();
     audioElement.srcObject = remoteStream;
     audioElement.autoplay = true;
@@ -256,8 +386,6 @@ export class WebRTCAudioManager {
         source.connect(gainNode);
         gainNode.connect(analyser);
 
-        // NOTE: We control volume via audioElement.volume directly for cross-browser stability.
-        // We do NOT connect gainNode to destination here to avoid duplicate echoing in Chrome.
         peerData.gainNode = gainNode;
         peerData.analyser = analyser;
       }
@@ -334,25 +462,23 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Handle an incoming ICE candidate
+   * Handle an incoming ICE candidate (safely queues early candidates)
    */
   async handleIceCandidate(senderSocketId, candidate) {
     if (!candidate) return;
 
     const peerData = this.peers.get(senderSocketId);
-    if (!peerData || !peerData.pc) return;
+    const pc = peerData?.pc;
 
-    const pc = peerData.pc;
-
-    // If remote description is already set, add candidate directly
-    if (pc.remoteDescription && pc.remoteDescription.type) {
+    // If peer connection exists and remote description is set, add directly
+    if (pc && pc.remoteDescription && pc.remoteDescription.type) {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));
       } catch (err) {
         console.warn(`[WebRTC P2P] Error adding ICE candidate:`, err);
       }
     } else {
-      // Queue candidate until remote description is set
+      // Safe queue: keep candidate until remote description is ready
       if (!this.iceCandidateQueues.has(senderSocketId)) {
         this.iceCandidateQueues.set(senderSocketId, []);
       }
@@ -408,9 +534,56 @@ export class WebRTCAudioManager {
     if (peerData.gainNode && this.audioContext) {
       try {
         peerData.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, 0.05);
-      } catch (e) {
-        // Fallback
-      }
+      } catch (e) {}
+    }
+  }
+
+  /**
+   * Read real-time WebRTC stats from RTCPeerConnection.getStats()
+   */
+  async getPeerStats(peerSocketId) {
+    const peerData = this.peers.get(peerSocketId);
+    if (!peerData || !peerData.pc) return null;
+
+    try {
+      const statsReport = await peerData.pc.getStats();
+      let bytesReceived = 0;
+      let packetsReceived = 0;
+      let bytesSent = 0;
+      let packetsSent = 0;
+      let jitter = 0;
+      let audioLevel = 0;
+
+      statsReport.forEach((report) => {
+        if (report.type === 'inbound-rtp' && report.kind === 'audio') {
+          bytesReceived = report.bytesReceived || 0;
+          packetsReceived = report.packetsReceived || 0;
+          jitter = report.jitter ? Math.round(report.jitter * 1000) : 0;
+          if (report.audioLevel !== undefined) audioLevel = report.audioLevel;
+        }
+        if (report.type === 'outbound-rtp' && report.kind === 'audio') {
+          bytesSent = report.bytesSent || 0;
+          packetsSent = report.packetsSent || 0;
+        }
+      });
+
+      const updated = {
+        connectionState: peerData.pc.connectionState,
+        iceConnectionState: peerData.pc.iceConnectionState,
+        signalingState: peerData.pc.signalingState,
+        distance: Math.round(peerData.distance || 0),
+        gainPercent: Math.round((peerData.gain || 0) * 100),
+        bytesReceived,
+        packetsReceived,
+        bytesSent,
+        packetsSent,
+        jitter,
+        audioLevel
+      };
+      peerData.stats = updated;
+      return updated;
+    } catch (e) {
+      return null;
     }
   }
 
@@ -438,12 +611,14 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Close all peer connections and release local microphone
+   * Close all peer connections and release local microphone/synthetic streams
    */
   destroy() {
     this.peers.forEach((_, socketId) => {
       this.closePeerConnection(socketId);
     });
+
+    this.stopSyntheticAudio(false);
 
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
@@ -459,7 +634,7 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Calculate root-mean-square (RMS) volume / audio level for local mic (0.0 to 1.0)
+   * Calculate root-mean-square (RMS) volume / audio level for local audio (0.0 to 1.0)
    */
   getLocalAudioLevel() {
     if (!this.localAnalyser || this.isMicMuted) {
@@ -475,7 +650,6 @@ export class WebRTCAudioManager {
       sum += dataArray[i];
     }
     const avg = sum / (dataArray.length * 255);
-    // Smooth level
     this.localAudioLevel = this.localAudioLevel * 0.7 + avg * 0.3;
     return this.localAudioLevel;
   }
@@ -524,14 +698,39 @@ export class WebRTCAudioManager {
   }
 
   /**
+   * Retrieve waveform bytes for remote peer audio oscilloscope canvas rendering
+   */
+  getPeerWaveformData(peerSocketId, outputArray) {
+    const peerData = this.peers.get(peerSocketId);
+    if (!peerData || !peerData.analyser) {
+      outputArray.fill(128);
+      return;
+    }
+    peerData.analyser.getByteTimeDomainData(outputArray);
+  }
+
+  /**
+   * Retrieve frequency bytes for remote peer audio equalizer canvas rendering
+   */
+  getPeerFrequencyData(peerSocketId, outputArray) {
+    const peerData = this.peers.get(peerSocketId);
+    if (!peerData || !peerData.analyser) {
+      outputArray.fill(0);
+      return;
+    }
+    peerData.analyser.getByteFrequencyData(outputArray);
+  }
+
+  /**
    * WebRTC Loopback Self-Test
-   * Connects two local RTCPeerConnections (pc1 <-> pc2) in-browser using getUserMedia
-   * Allows the user to test WebRTC audio encoding, decoding, and playback locally.
+   * Connects two local RTCPeerConnections (pc1 <-> pc2) in-browser using getUserMedia or synthetic tone
    */
   async startLoopbackTest() {
     if (!this.localStream) {
       await this.initMicrophone();
-      if (!this.localStream) return false;
+      if (!this.localStream) {
+        this.startSyntheticAudio(440);
+      }
     }
 
     try {
@@ -552,9 +751,11 @@ export class WebRTCAudioManager {
         loopbackAudio.srcObject = event.streams[0];
       };
 
-      this.localStream.getAudioTracks().forEach((track) => {
-        pc1.addTrack(track, this.localStream);
-      });
+      if (this.localStream) {
+        this.localStream.getAudioTracks().forEach((track) => {
+          pc1.addTrack(track, this.localStream);
+        });
+      }
 
       const offer = await pc1.createOffer({ offerToReceiveAudio: true });
       await pc1.setLocalDescription(offer);

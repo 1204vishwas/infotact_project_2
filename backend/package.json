@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "audit": "node scripts/audit-benchmark.js"
+    "audit": "node scripts/audit-benchmark.js",
+    "audio-check": "node scripts/audio-check-demo.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
