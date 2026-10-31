@@ -1,6 +1,6 @@
 /**
  * ProxiSpeak CLI Audio Check & Two-Browser WebRTC Demonstration
- * Infotact Solutions GÇö ISO 9001:2015 Quality Assurance
+ * Infotact Solutions â€” ISO 9001:2015 Quality Assurance
  * Mid-Project Review Milestone: WebRTC Audio Connection via Signaling Server
  *
  * Demonstrates:
