@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const mongoose = require('mongoose');
 const User = require('../models/User');
-const { OFFICE_BOUNDS, listPlayers, players } = require('../realtime/worldState');
+const { OFFICE_BOUNDS, listPlayers } = require('../realtime/worldState');
 
 // ==========================================
 // Helper: greedy union-find clustering of users that are within `radius`
@@ -58,8 +58,8 @@ router.get('/bounds', (req, res) => {
 // Snapshot of colleagues currently occupying the virtual office.
 // Useful for initial render before the socket handshake completes.
 // ==========================================
-router.get('/online', (req, res) => {
-  const roster = listPlayers();
+router.get('/online', async (req, res) => {
+  const roster = await listPlayers();
   return res.status(200).json({
     success: true,
     count: roster.length,
@@ -114,7 +114,8 @@ router.get('/nearby', async (req, res) => {
   }
 
   if (source !== 'mongodb') {
-    for (const player of players.values()) {
+    const roster = await listPlayers();
+    for (const player of roster) {
       const dist = Math.hypot(player.x - point[0], player.y - point[1]);
       if (dist <= maxDist) {
         nearbyUsers.push({
@@ -158,7 +159,7 @@ router.get('/nearby', async (req, res) => {
 router.get('/benchmark', async (req, res) => {
   const iterations = Math.min(Math.max(Number(req.query.iterations) || 200, 1), 5000);
   const radius = Number(req.query.radius) || 100;
-  const roster = listPlayers().map((p) => ({ ...p, location: [p.x, p.y] }));
+  const roster = (await listPlayers()).map((p) => ({ ...p, location: [p.x, p.y] }));
 
   // Measurement 1: in-memory union-find clustering (same data the realtime
   // layer uses for proximity groups).

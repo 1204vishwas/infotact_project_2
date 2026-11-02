@@ -1,13 +1,29 @@
 const User = require('../models/User');
+const { createRealtimeStore } = require('../realtime/sharedStore');
 
 // Strictly enforced 100-pixel radius threshold for WebRTC offers, answers, and audio mesh
 const WEBRTC_PROXIMITY_RADIUS = 100;
 
-// Active avatars in the virtual office space (socketId -> profile)
-const activeAvatars = new Map();
+// Active avatars in the virtual office space (socketId -> profile). Redis-backed
+// when configured so every Node instance shares the same roster.
+const avatarStore = createRealtimeStore('signaling:avatars');
 
-// Set of in-range peers per socket for detecting entry and exit transitions
+// Sockets owned by this process, used for heartbeat/cleanup only.
+const localSocketIds = new Set();
+let maintenanceStarted = false;
+
+// Set of in-range peers per socket for detecting entry and exit transitions.
+// This is intentionally process-local: transitions are emitted by the instance
+// that owns the moving socket, while io.to() fans the event out via the adapter.
 const inRangePeerPairs = new Map();
+const lastProximityCheckAt = new Map();
+const PROXIMITY_CHECK_INTERVAL_MS = 200;
+
+// Cached roster snapshot for proximity scans. Avoids an HGETALL per movement
+// event; a 100ms lag is invisible for HUD/earshot transitions.
+let avatarSnapshot = [];
+let avatarSnapshotAt = 0;
+const AVATAR_SNAPSHOT_TTL_MS = 100;
 
 // Throttle map for updating coordinates in MongoDB
 const pendingDbUpdates = new Map();
@@ -18,6 +34,25 @@ function calculateDistance(locA, locB) {
   const dx = locA[0] - locB[0];
   const dy = locA[1] - locB[1];
   return Math.sqrt(dx * dx + dy * dy);
+}
+
+async function getAvatarSnapshot(force = false) {
+  const now = Date.now();
+  if (!force && avatarSnapshotAt && now - avatarSnapshotAt < AVATAR_SNAPSHOT_TTL_MS) {
+    return avatarSnapshot;
+  }
+  avatarSnapshot = await avatarStore.values();
+  avatarSnapshotAt = now;
+  return avatarSnapshot;
+}
+
+function syncSnapshotEntry(avatar) {
+  const entry = avatarSnapshot.find((item) => item.socketId === avatar.socketId);
+  if (entry) Object.assign(entry, avatar);
+}
+
+async function getLocalAvatar(socketId) {
+  return avatarStore.getLocal(socketId) || avatarStore.get(socketId);
 }
 
 // Flush coordinates to MongoDB periodically (every 2.5 seconds)
@@ -41,6 +76,11 @@ setInterval(async () => {
 }, 2500);
 
 module.exports = function initSignalingServer(io) {
+  if (!maintenanceStarted) {
+    maintenanceStarted = true;
+    avatarStore.startMaintenance({ localKeys: () => Array.from(localSocketIds) });
+  }
+
   io.on('connection', (socket) => {
     console.log(`[ProxiSpeak Socket] Avatar connected: ${socket.id}`);
 
@@ -75,24 +115,27 @@ module.exports = function initSignalingServer(io) {
           location,
           micMuted: false,
           deafened: false,
-          joinedAt: new Date()
+          joinedAt: Date.now(),
+          updatedAt: Date.now()
         };
 
-        activeAvatars.set(socket.id, avatarProfile);
+        await avatarStore.set(socket.id, avatarProfile);
+        localSocketIds.add(socket.id);
 
         // 1. Send all existing peers in the space to the newly joined avatar
-        const currentPeers = Array.from(activeAvatars.values()).filter(a => a.socketId !== socket.id);
+        const allAvatars = await getAvatarSnapshot(true);
+        const currentPeers = allAvatars.filter((a) => a.socketId !== socket.id);
         socket.emit('space-state', {
           self: avatarProfile,
           peers: currentPeers,
-          totalOnline: activeAvatars.size,
+          totalOnline: allAvatars.length,
           webrtcRadiusLimit: WEBRTC_PROXIMITY_RADIUS
         });
 
         // 2. Broadcast new avatar arrival to all other connected avatars
         socket.broadcast.emit('user-joined', avatarProfile);
 
-        console.log(`[ProxiSpeak] User '${name}' (${role}) joined space at [${location.join(', ')}]. Total: ${activeAvatars.size}`);
+        console.log(`[ProxiSpeak] User '${name}' (${role}) joined space at [${location.join(', ')}]. Total: ${allAvatars.length}`);
 
         // Update MongoDB presence
         if (userData?.id && !userData.id.startsWith('guest_')) {
@@ -107,109 +150,133 @@ module.exports = function initSignalingServer(io) {
     // 2. AVATAR REAL-TIME MOVEMENT & PROXIMITY CALCULATIONS
     // ====================================================
     socket.on('avatar-move', async (movementData) => {
-      const avatar = activeAvatars.get(socket.id);
-      if (!avatar) return;
+      try {
+        const avatar = await getLocalAvatar(socket.id);
+        if (!avatar) return;
 
-      const { x, y, direction, isMoving } = movementData;
-      if (typeof x !== 'number' || typeof y !== 'number') return;
+        const { x, y, direction, isMoving } = movementData;
+        if (typeof x !== 'number' || typeof y !== 'number') return;
 
-      // Update in-memory coordinates
-      avatar.location = [Math.round(x), Math.round(y)];
-      avatar.direction = direction || avatar.direction;
-      avatar.isMoving = !!isMoving;
+        // Update shared coordinates
+        avatar.location = [Math.round(x), Math.round(y)];
+        avatar.direction = direction || avatar.direction;
+        avatar.isMoving = !!isMoving;
+        avatar.updatedAt = Date.now();
 
-      // Broadcast new position to all other avatars in the canvas world
-      socket.broadcast.emit('user-moved', {
-        socketId: socket.id,
-        userId: avatar.userId,
-        location: avatar.location,
-        direction: avatar.direction,
-        isMoving: avatar.isMoving
-      });
+        await avatarStore.set(socket.id, avatar);
+        syncSnapshotEntry(avatar);
 
-      // ----------------------------------------------------
-      // Real-time Proximity Boundary Transitions (100-pixel radius)
-      // ----------------------------------------------------
-      const currentInRange = inRangePeerPairs.get(socket.id) || new Set();
-      const nextInRange = new Set();
+        // Broadcast new position to all other avatars in the canvas world
+        socket.broadcast.emit('user-moved', {
+          socketId: socket.id,
+          userId: avatar.userId,
+          location: avatar.location,
+          direction: avatar.direction,
+          isMoving: avatar.isMoving
+        });
 
-      for (const [peerSocketId, peerAvatar] of activeAvatars.entries()) {
-        if (peerSocketId === socket.id) continue;
+        // ----------------------------------------------------
+        // Real-time Proximity Boundary Transitions (100-pixel radius)
+        // ----------------------------------------------------
+        const now = Date.now();
+        const lastCheck = lastProximityCheckAt.get(socket.id) || 0;
+        if (now - lastCheck >= PROXIMITY_CHECK_INTERVAL_MS) {
+          lastProximityCheckAt.set(socket.id, now);
 
-        const distance = calculateDistance(avatar.location, peerAvatar.location);
+          const currentInRange = inRangePeerPairs.get(socket.id) || new Set();
+          const nextInRange = new Set();
+          const allAvatars = await getAvatarSnapshot();
 
-        if (distance <= WEBRTC_PROXIMITY_RADIUS) {
-          nextInRange.add(peerSocketId);
+          for (const peerAvatar of allAvatars) {
+            const peerSocketId = peerAvatar.socketId;
+            if (peerSocketId === socket.id) continue;
 
-          // Transition: Peer just ENTERED 100-pixel radius!
-          if (!currentInRange.has(peerSocketId)) {
-            const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
-            console.log(`[Proximity Transition] '${peerAvatar.name}' ENTERED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). WebRTC Offer Allowed.`);
+            const distance = calculateDistance(avatar.location, peerAvatar.location);
 
-            // Notify moving avatar to initiate or accept offer
-            socket.emit('proximity-peer-entered', {
-              peer: peerAvatar,
-              distance: Math.round(distance),
-              maxRadius: WEBRTC_PROXIMITY_RADIUS,
-              gain,
-              shouldInitiateOffer: socket.id < peerSocketId // deterministic offer initiator to prevent glare
-            });
+            if (distance <= WEBRTC_PROXIMITY_RADIUS) {
+              nextInRange.add(peerSocketId);
 
-            // Notify target peer
-            io.to(peerSocketId).emit('proximity-peer-entered', {
-              peer: avatar,
-              distance: Math.round(distance),
-              maxRadius: WEBRTC_PROXIMITY_RADIUS,
-              gain,
-              shouldInitiateOffer: peerSocketId < socket.id
-            });
+              // Transition: Peer just ENTERED 100-pixel radius!
+              if (!currentInRange.has(peerSocketId)) {
+                const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
+                console.log(`[Proximity Transition] '${peerAvatar.name}' ENTERED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). WebRTC Offer Allowed.`);
+
+                // Notify moving avatar to initiate or accept offer
+                socket.emit('proximity-peer-entered', {
+                  peer: peerAvatar,
+                  distance: Math.round(distance),
+                  maxRadius: WEBRTC_PROXIMITY_RADIUS,
+                  gain,
+                  shouldInitiateOffer: socket.id < peerSocketId // deterministic offer initiator to prevent glare
+                });
+
+                // Notify target peer
+                io.to(peerSocketId).emit('proximity-peer-entered', {
+                  peer: avatar,
+                  distance: Math.round(distance),
+                  maxRadius: WEBRTC_PROXIMITY_RADIUS,
+                  gain,
+                  shouldInitiateOffer: peerSocketId < socket.id
+                });
+              }
+            } else {
+              // Transition: Peer just EXITED 100-pixel radius!
+              if (currentInRange.has(peerSocketId)) {
+                console.log(`[Proximity Transition] '${peerAvatar.name}' EXITED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). Closing WebRTC audio.`);
+
+                socket.emit('proximity-peer-left', {
+                  peerSocketId,
+                  peerName: peerAvatar.name,
+                  distance: Math.round(distance),
+                  maxRadius: WEBRTC_PROXIMITY_RADIUS
+                });
+
+                io.to(peerSocketId).emit('proximity-peer-left', {
+                  peerSocketId: socket.id,
+                  peerName: avatar.name,
+                  distance: Math.round(distance),
+                  maxRadius: WEBRTC_PROXIMITY_RADIUS
+                });
+              }
+            }
           }
-        } else {
-          // Transition: Peer just EXITED 100-pixel radius!
-          if (currentInRange.has(peerSocketId)) {
-            console.log(`[Proximity Transition] '${peerAvatar.name}' EXITED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). Closing WebRTC audio.`);
 
-            socket.emit('proximity-peer-left', {
-              peerSocketId,
-              peerName: peerAvatar.name,
-              distance: Math.round(distance),
-              maxRadius: WEBRTC_PROXIMITY_RADIUS
-            });
-
-            io.to(peerSocketId).emit('proximity-peer-left', {
-              peerSocketId: socket.id,
-              peerName: avatar.name,
-              distance: Math.round(distance),
-              maxRadius: WEBRTC_PROXIMITY_RADIUS
-            });
-          }
+          inRangePeerPairs.set(socket.id, nextInRange);
         }
-      }
 
-      inRangePeerPairs.set(socket.id, nextInRange);
-
-      // Queue database persistence
-      if (avatar.userId && !avatar.userId.startsWith('guest_')) {
-        pendingDbUpdates.set(avatar.userId, avatar.location);
+        // Queue database persistence
+        if (avatar.userId && !avatar.userId.startsWith('guest_')) {
+          pendingDbUpdates.set(avatar.userId, avatar.location);
+        }
+      } catch (err) {
+        console.error('[ProxiSpeak Socket Error on avatar-move]:', err);
       }
     });
 
     // ====================================================
     // 3. AUDIO STATE CHANGE (Mic Mute / Deafened)
     // ====================================================
-    socket.on('audio-state-change', (audioState) => {
-      const avatar = activeAvatars.get(socket.id);
-      if (!avatar) return;
+    socket.on('audio-state-change', async (audioState) => {
+      try {
+        const avatar = await getLocalAvatar(socket.id);
+        if (!avatar) return;
 
-      avatar.micMuted = !!audioState.micMuted;
-      avatar.deafened = !!audioState.deafened;
+        avatar.micMuted = !!audioState.micMuted;
+        avatar.deafened = !!audioState.deafened;
+        avatar.updatedAt = Date.now();
 
-      socket.broadcast.emit('user-audio-changed', {
-        socketId: socket.id,
-        userId: avatar.userId,
-        micMuted: avatar.micMuted,
-        deafened: avatar.deafened
-      });
+        await avatarStore.set(socket.id, avatar);
+        syncSnapshotEntry(avatar);
+
+        socket.broadcast.emit('user-audio-changed', {
+          socketId: socket.id,
+          userId: avatar.userId,
+          micMuted: avatar.micMuted,
+          deafened: avatar.deafened
+        });
+      } catch (err) {
+        console.error('[ProxiSpeak Socket Error on audio-state-change]:', err);
+      }
     });
 
     // ====================================================
@@ -217,116 +284,128 @@ module.exports = function initSignalingServer(io) {
     // ====================================================
 
     // Relay WebRTC Offer — ONLY allowed if within 100-pixel radius
-    socket.on('webrtc-offer', ({ targetSocketId, offer }) => {
-      const sender = activeAvatars.get(socket.id);
-      const target = activeAvatars.get(targetSocketId);
+    socket.on('webrtc-offer', async ({ targetSocketId, offer }) => {
+      try {
+        const sender = await getLocalAvatar(socket.id);
+        const target = await getLocalAvatar(targetSocketId);
 
-      if (!sender || !target) {
-        socket.emit('webrtc-signal-error', {
-          message: 'Target peer avatar is no longer active in the space.'
-        });
-        return;
-      }
-
-      const distance = calculateDistance(sender.location, target.location);
-
-      // --- STRICT PROXIMITY CHECK: EXCLUDE PEERS BEYOND 100 PIXELS ---
-      if (distance > WEBRTC_PROXIMITY_RADIUS) {
-        console.warn(`[WebRTC Guard: BLOCKED] Offer from '${sender.name}' to '${target.name}' rejected. Distance ${distance.toFixed(1)}px exceeds ${WEBRTC_PROXIMITY_RADIUS}px limit.`);
-
-        socket.emit('webrtc-signal-rejected', {
-          type: 'offer',
-          targetSocketId,
-          targetName: target.name,
-          distance: Math.round(distance),
-          maxRadius: WEBRTC_PROXIMITY_RADIUS,
-          reason: 'OUT_OF_PROXIMITY_RANGE',
-          message: `WebRTC Offer Blocked: Peer '${target.name}' is ${Math.round(distance)}px away, exceeding the 100-pixel earshot limit.`
-        });
-        return;
-      }
-
-      // Proximity verified: Distance is <= 100px
-      const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
-      console.log(`[WebRTC Guard: PERMITTED] Offer from '${sender.name}' to '${target.name}' accepted. Distance ${distance.toFixed(1)}px <= 100px (Gain: ${gain}%).`);
-
-      io.to(targetSocketId).emit('webrtc-offer', {
-        callerSocketId: socket.id,
-        callerUser: sender,
-        offer,
-        proximity: {
-          distance: Math.round(distance),
-          maxRadius: WEBRTC_PROXIMITY_RADIUS,
-          gain,
-          inRange: true
+        if (!sender || !target) {
+          socket.emit('webrtc-signal-error', {
+            message: 'Target peer avatar is no longer active in the space.'
+          });
+          return;
         }
-      });
+
+        const distance = calculateDistance(sender.location, target.location);
+
+        // --- STRICT PROXIMITY CHECK: EXCLUDE PEERS BEYOND 100 PIXELS ---
+        if (distance > WEBRTC_PROXIMITY_RADIUS) {
+          console.warn(`[WebRTC Guard: BLOCKED] Offer from '${sender.name}' to '${target.name}' rejected. Distance ${distance.toFixed(1)}px exceeds ${WEBRTC_PROXIMITY_RADIUS}px limit.`);
+
+          socket.emit('webrtc-signal-rejected', {
+            type: 'offer',
+            targetSocketId,
+            targetName: target.name,
+            distance: Math.round(distance),
+            maxRadius: WEBRTC_PROXIMITY_RADIUS,
+            reason: 'OUT_OF_PROXIMITY_RANGE',
+            message: `WebRTC Offer Blocked: Peer '${target.name}' is ${Math.round(distance)}px away, exceeding the 100-pixel earshot limit.`
+          });
+          return;
+        }
+
+        // Proximity verified: Distance is <= 100px
+        const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
+        console.log(`[WebRTC Guard: PERMITTED] Offer from '${sender.name}' to '${target.name}' accepted. Distance ${distance.toFixed(1)}px <= 100px (Gain: ${gain}%).`);
+
+        io.to(targetSocketId).emit('webrtc-offer', {
+          callerSocketId: socket.id,
+          callerUser: sender,
+          offer,
+          proximity: {
+            distance: Math.round(distance),
+            maxRadius: WEBRTC_PROXIMITY_RADIUS,
+            gain,
+            inRange: true
+          }
+        });
+      } catch (err) {
+        console.error('[ProxiSpeak Socket Error on webrtc-offer]:', err);
+      }
     });
 
     // Relay WebRTC Answer — ONLY allowed if within 100-pixel radius
-    socket.on('webrtc-answer', ({ targetSocketId, answer }) => {
-      const callee = activeAvatars.get(socket.id);
-      const caller = activeAvatars.get(targetSocketId);
+    socket.on('webrtc-answer', async ({ targetSocketId, answer }) => {
+      try {
+        const callee = await getLocalAvatar(socket.id);
+        const caller = await getLocalAvatar(targetSocketId);
 
-      if (!callee || !caller) {
-        socket.emit('webrtc-signal-error', {
-          message: 'Caller avatar is no longer active in the space.'
-        });
-        return;
-      }
-
-      const distance = calculateDistance(callee.location, caller.location);
-
-      // --- STRICT PROXIMITY CHECK: EXCLUDE PEERS BEYOND 100 PIXELS ---
-      if (distance > WEBRTC_PROXIMITY_RADIUS) {
-        console.warn(`[WebRTC Guard: BLOCKED] Answer from '${callee.name}' to '${caller.name}' rejected. Distance ${distance.toFixed(1)}px exceeds ${WEBRTC_PROXIMITY_RADIUS}px limit.`);
-
-        socket.emit('webrtc-signal-rejected', {
-          type: 'answer',
-          targetSocketId,
-          targetName: caller.name,
-          distance: Math.round(distance),
-          maxRadius: WEBRTC_PROXIMITY_RADIUS,
-          reason: 'OUT_OF_PROXIMITY_RANGE',
-          message: `WebRTC Answer Blocked: Caller '${caller.name}' is ${Math.round(distance)}px away, exceeding the 100-pixel earshot limit.`
-        });
-        return;
-      }
-
-      const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
-      console.log(`[WebRTC Guard: PERMITTED] Answer from '${callee.name}' to '${caller.name}' accepted. Distance ${distance.toFixed(1)}px <= 100px (Gain: ${gain}%).`);
-
-      io.to(targetSocketId).emit('webrtc-answer', {
-        calleeSocketId: socket.id,
-        calleeUser: callee,
-        answer,
-        proximity: {
-          distance: Math.round(distance),
-          maxRadius: WEBRTC_PROXIMITY_RADIUS,
-          gain,
-          inRange: true
+        if (!callee || !caller) {
+          socket.emit('webrtc-signal-error', {
+            message: 'Caller avatar is no longer active in the space.'
+          });
+          return;
         }
-      });
+
+        const distance = calculateDistance(callee.location, caller.location);
+
+        // --- STRICT PROXIMITY CHECK: EXCLUDE PEERS BEYOND 100 PIXELS ---
+        if (distance > WEBRTC_PROXIMITY_RADIUS) {
+          console.warn(`[WebRTC Guard: BLOCKED] Answer from '${callee.name}' to '${caller.name}' rejected. Distance ${distance.toFixed(1)}px exceeds ${WEBRTC_PROXIMITY_RADIUS}px limit.`);
+
+          socket.emit('webrtc-signal-rejected', {
+            type: 'answer',
+            targetSocketId,
+            targetName: caller.name,
+            distance: Math.round(distance),
+            maxRadius: WEBRTC_PROXIMITY_RADIUS,
+            reason: 'OUT_OF_PROXIMITY_RANGE',
+            message: `WebRTC Answer Blocked: Caller '${caller.name}' is ${Math.round(distance)}px away, exceeding the 100-pixel earshot limit.`
+          });
+          return;
+        }
+
+        const gain = Math.max(10, Math.min(100, Math.round((1 - distance / WEBRTC_PROXIMITY_RADIUS) * 100)));
+        console.log(`[WebRTC Guard: PERMITTED] Answer from '${callee.name}' to '${caller.name}' accepted. Distance ${distance.toFixed(1)}px <= 100px (Gain: ${gain}%).`);
+
+        io.to(targetSocketId).emit('webrtc-answer', {
+          calleeSocketId: socket.id,
+          calleeUser: callee,
+          answer,
+          proximity: {
+            distance: Math.round(distance),
+            maxRadius: WEBRTC_PROXIMITY_RADIUS,
+            gain,
+            inRange: true
+          }
+        });
+      } catch (err) {
+        console.error('[ProxiSpeak Socket Error on webrtc-answer]:', err);
+      }
     });
 
     // Relay ICE Candidate — ONLY allowed if within 100-pixel radius
-    socket.on('webrtc-ice-candidate', ({ targetSocketId, candidate }) => {
-      const sender = activeAvatars.get(socket.id);
-      const target = activeAvatars.get(targetSocketId);
+    socket.on('webrtc-ice-candidate', async ({ targetSocketId, candidate }) => {
+      try {
+        const sender = await getLocalAvatar(socket.id);
+        const target = await getLocalAvatar(targetSocketId);
 
-      if (!sender || !target) return;
+        if (!sender || !target) return;
 
-      const distance = calculateDistance(sender.location, target.location);
-      if (distance > WEBRTC_PROXIMITY_RADIUS) {
-        // Discard ICE candidate if outside 100px radius
-        return;
+        const distance = calculateDistance(sender.location, target.location);
+        if (distance > WEBRTC_PROXIMITY_RADIUS) {
+          // Discard ICE candidate if outside 100px radius
+          return;
+        }
+
+        io.to(targetSocketId).emit('webrtc-ice-candidate', {
+          senderSocketId: socket.id,
+          candidate,
+          distance: Math.round(distance)
+        });
+      } catch (err) {
+        console.error('[ProxiSpeak Socket Error on webrtc-ice-candidate]:', err);
       }
-
-      io.to(targetSocketId).emit('webrtc-ice-candidate', {
-        senderSocketId: socket.id,
-        candidate,
-        distance: Math.round(distance)
-      });
     });
 
     // ====================================================
@@ -345,28 +424,38 @@ module.exports = function initSignalingServer(io) {
     // 6. DISCONNECT / LEAVE
     // ====================================================
     socket.on('disconnect', async () => {
-      const leavingAvatar = activeAvatars.get(socket.id);
-      if (leavingAvatar) {
-        activeAvatars.delete(socket.id);
+      try {
+        const leavingAvatar = await avatarStore.get(socket.id);
+        localSocketIds.delete(socket.id);
         inRangePeerPairs.delete(socket.id);
+        lastProximityCheckAt.delete(socket.id);
+        avatarSnapshotAt = 0;
 
         // Remove from other peers' in-range sets
         for (const set of inRangePeerPairs.values()) {
           set.delete(socket.id);
         }
 
+        if (!leavingAvatar) return;
+
+        await avatarStore.delete(socket.id);
+
         socket.broadcast.emit('user-left', {
           socketId: socket.id,
           userId: leavingAvatar.userId,
           name: leavingAvatar.name
         });
-        console.log(`[ProxiSpeak] User '${leavingAvatar.name}' left. Total online: ${activeAvatars.size}`);
+        const total = await avatarStore.size();
+        console.log(`[ProxiSpeak] User '${leavingAvatar.name}' left. Total online: ${total}`);
+      } catch (err) {
+        console.error('[ProxiSpeak Socket Error on disconnect]:', err);
       }
     });
   });
 
   return {
-    getActiveAvatars: () => Array.from(activeAvatars.values()),
+    getActiveAvatars: () => Array.from(avatarStore.local.values()),
+    getActiveAvatarsAsync: () => avatarStore.values(),
     getProximityRadius: () => WEBRTC_PROXIMITY_RADIUS
   };
 };

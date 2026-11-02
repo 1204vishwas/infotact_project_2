@@ -1,6 +1,10 @@
-// Shared in-memory state for the ProxiSpeak 2D virtual office.
+// Shared realtime state for the ProxiSpeak 2D virtual office.
 // Coordinates are plain [X, Y] pixel positions on the React Canvas world,
 // which map 1:1 onto the MongoDB `2d` planar geospatial index on the User model.
+// The roster is backed by Redis when configured so multiple Node instances see
+// the same players; otherwise it falls back to a process-local Map.
+
+const { createRealtimeStore } = require('./sharedStore');
 
 const OFFICE_BOUNDS = Object.freeze({
   width: 1200,
@@ -12,8 +16,8 @@ const OFFICE_BOUNDS = Object.freeze({
 // client's EARSHOT constant so the server enforces the same 100px earshot.
 const HEARING_RADIUS = 100;
 
-// socketId -> live player record
-const players = new Map();
+// socketId -> live player record (Redis hash when configured).
+const worldStore = createRealtimeStore('world:players');
 
 const clamp = (value, min, max) => {
   const num = Number(value);
@@ -46,24 +50,27 @@ function toPublicPlayer(player) {
   };
 }
 
-function listPlayers() {
-  return Array.from(players.values()).map(toPublicPlayer);
+async function listPlayers() {
+  const roster = await worldStore.values();
+  return roster.map(toPublicPlayer);
 }
 
-function getPlayerByUserId(userId) {
-  for (const player of players.values()) {
-    if (player.id === userId) return player;
-  }
-  return null;
+async function getPlayerByUserId(userId) {
+  return worldStore.find((player) => player.id === userId);
+}
+
+async function countPlayers() {
+  return worldStore.size();
 }
 
 module.exports = {
   OFFICE_BOUNDS,
   HEARING_RADIUS,
-  players,
+  worldStore,
   clamp,
   sanitizePosition,
   toPublicPlayer,
   listPlayers,
-  getPlayerByUserId
+  getPlayerByUserId,
+  countPlayers
 };

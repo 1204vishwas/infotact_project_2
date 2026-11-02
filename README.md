@@ -26,7 +26,7 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
 | **Week 1** | **Signaling & Movement:** Build WebSocket server to broadcast avatar $X/Y$ coordinates. Setup basic MongoDB geospatial schemas. | **World Rendering:** Build the React Canvas layer. Implement smooth keyboard/mouse avatar movement and coordinate broadcasting. | **✅ COMPLETED** |
 | **Week 2** | **Proximity Calculations:** Implement MongoDB `$near` queries to group users. Logic to only send WebRTC offer/answers to users within a 100-pixel radius. | **WebRTC Integration:** Implement standard WebRTC peer-to-peer audio connections using browser `getUserMedia`. | **✅ COMPLETED** |
 | **Mid-Project Review** | **Spatial Audit:** Prove backend accurately filters and clusters users based on geospatial coordinates under 20ms. | **Audio Check:** Demonstrate two browsers successfully establishing a WebRTC audio connection via the signaling server. | **✅ COMPLETED** |
-| **Week 3** | **Mesh Scaling:** Optimize WebRTC mesh network. Implement Redis Pub/Sub to allow scaling Socket.io across multiple Node instances. | **Dynamic Attenuation:** Hook WebRTC audio tracks into Web Audio API. Write algorithms to calculate volume drop-off based on pixel distance. | **✅ COMPLETED** |
+| **Week 3** | **Mesh Scaling:** Optimize WebRTC mesh network. Implement Redis Pub/Sub **and a Redis-backed shared avatar roster** so Socket.io and proximity state scale across multiple Node instances. | **Dynamic Attenuation:** Hook WebRTC audio tracks into Web Audio API. Write algorithms to calculate volume drop-off based on pixel distance. | **✅ COMPLETED** |
 | **Week 4** | **Room Persistence:** Save office layouts and furniture obstacles (which block sound) into MongoDB. | **Refine & Polish:** Add 3D audio panning (stereo separation). Ensure Canvas animations render at a steady 60 FPS. | ⏳ Planned |
 | **Final Review** | Highly scalable, stateful geospatial server managing complex P2P routing logic. | Immersive, physics-aware communication platform demonstrating advanced browser audio manipulation. | 🎯 Target |
 
@@ -94,7 +94,7 @@ The merged application keeps **both** realtime experiences behind one backend:
 1. **Virtual Office World (`VirtualOfficeWorld.jsx`)** — the Week 1 React Canvas layer with `join-space` / `avatar-move` / `webrtc-*` signaling, the strict 100px WebRTC gatekeeper, MongoDB `$near` pods, and the spatial audit tooling.
 2. **2D Canvas World (`WorldCanvas.jsx`)** — the Redis-ready `world:*` coordinate channel with `useWorldSocket` / `useWebRTC`, Web Audio API distance attenuation, proximity groups, and the saved-session resume flow.
 3. **Shared Socket.io server** — `backend/server.js` initializes **both** `initWorldSocket(io)` and `initSignalingServer(io)` on the same HTTP server, and mounts `/api/auth`, `/api/world`, and `/api/spatial`.
-4. **Optional Redis Pub/Sub scaling** — when `REDIS_URL` is set, the server attaches `@socket.io/redis-adapter` using `ioredis`; if Redis is unavailable it logs a warning and falls back to the in-memory adapter. No Redis is required for local development.
+4. **Redis Pub/Sub + shared state scaling** — when `REDIS_URL` is set, the server attaches `@socket.io/redis-adapter` using `ioredis` **and** stores both realtime rosters (`world:players` and `signaling:avatars`) in Redis hashes through `realtime/sharedStore.js`. Every Node instance therefore sees the same avatars, coordinates, and proximity decisions; duplicate logins are evicted across instances. If Redis is unavailable the store transparently falls back to a process-local Map. No Redis is required for local development.
 5. **Authentication** — `backend/models/User.js` keeps the full Week 2 spatial schema and statics (`findNearby`, `findWithinBox`, `groupUsersByProximity`) while remaining compatible with the Week 1 auth routes.
 
 ---
@@ -257,8 +257,9 @@ project_2/
     ├── sockets/
     │   └── signaling.js      # Strict 100px WebRTC gatekeeper & real-time movement
     ├── realtime/
+    │   ├── sharedStore.js    # Redis-hash shared roster with in-memory fallback
     │   ├── worldSocket.js    # world:* coordinate broadcasting & hearing-radius signaling
-    │   └── worldState.js     # In-memory world state, bounds & sanitization
+    │   └── worldState.js     # Shared world state, bounds & sanitization
     ├── models/
     │   ├── User.js           # 2D Cartesian index, $near helpers & audio pod clustering
     │   └── OfficeSpace.js    # 2D office layout zones and obstacles schema
@@ -357,7 +358,7 @@ npm run backend
 ```
 
 > [!NOTE]
-> `backend/.env` and all `node_modules/` directories are ignored by Git. If Redis is not running, the server still starts with the in-memory adapter; the Redis Pub/Sub adapter is only enabled when `REDIS_URL` is set and reachable.
+> `backend/.env` and all `node_modules/` directories are ignored by Git. If Redis is not running, the server still starts with the in-memory adapter and a process-local roster; the Redis Pub/Sub adapter and shared Redis roster are only enabled when `REDIS_URL` is set and reachable.
 
 ---
 
@@ -402,6 +403,7 @@ npm run backend
    - **Profile** — the saved-session profile panel.
 3. **Session resume:** reload the page. The login screen shows a **Saved Session** banner instead of auto-logging in. Click **Resume** to validate the JWT via `GET /api/auth/me`; an invalid/expired token is cleared.
 4. **Redis fallback:** start the backend without `REDIS_URL` and confirm `/api/health` reports `redis: "disabled"`. Set `REDIS_URL=redis://127.0.0.1:6379`, restart, and confirm the log reports the Redis adapter enabled (or a graceful in-memory fallback warning if Redis is unreachable).
+5. **Shared roster across instances:** with Redis running, start two backends on different ports (`PORT=5000` and `PORT=5001`, same `REDIS_URL`). Join the Canvas world on both. `GET /api/world/online` on either port returns both avatars, and a move on one instance is visible on the other. Joining with the same account on the second instance evicts the first socket via `world:evicted`.
 
 ---
 

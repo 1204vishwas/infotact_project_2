@@ -12,6 +12,7 @@ const worldRoutes = require('./routes/world');
 const spatialRoutes = require('./routes/spatial');
 const initWorldSocket = require('./realtime/worldSocket');
 const initSignalingServer = require('./sockets/signaling');
+const { setDefaultRedis } = require('./realtime/sharedStore');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -58,12 +59,6 @@ const io = new Server(httpServer, {
   }
 });
 
-// Both realtime layers share one Socket.io server:
-// - worldSocket: world:* coordinate broadcasting for the 2D canvas world
-// - signaling: join-space / avatar-move / webrtc-* for the virtual office
-initWorldSocket(io);
-initSignalingServer(io);
-
 function withTimeout(promise, ms, message) {
   let timer;
   const timeout = new Promise((resolve, reject) => {
@@ -74,6 +69,7 @@ function withTimeout(promise, ms, message) {
 
 async function setupRedisAdapter() {
   if (!REDIS_URL) {
+    setDefaultRedis(null);
     return;
   }
 
@@ -95,8 +91,11 @@ async function setupRedisAdapter() {
       'Redis connection timed out'
     );
     io.adapter(createAdapter(pubClient, subClient));
+    setDefaultRedis(pubClient);
     console.log('[ProxiSpeak] Redis Pub/Sub adapter enabled for Socket.io scaling');
+    console.log('[ProxiSpeak] Realtime roster shared through Redis for multi-instance consistency');
   } catch (err) {
+    setDefaultRedis(null);
     pubClient.disconnect();
     subClient.disconnect();
     console.warn('[ProxiSpeak] Redis adapter setup failed, falling back to in-memory adapter:', err.message);
@@ -114,6 +113,14 @@ mongoose.connect(MONGODB_URI)
   });
 
 setupRedisAdapter().finally(() => {
+  // Both realtime layers share one Socket.io server and the same Redis-backed
+  // roster. They are attached after Redis setup so the shared store is live
+  // before the first client can join.
+  // - worldSocket: world:* coordinate broadcasting for the 2D canvas world
+  // - signaling: join-space / avatar-move / webrtc-* for the virtual office
+  initWorldSocket(io);
+  initSignalingServer(io);
+
   httpServer.listen(PORT, () => {
     console.log(`[ProxiSpeak Auth Server] Running on http://localhost:${PORT}`);
     console.log(`[ProxiSpeak Realtime] Socket.io world broadcasting active on ws://localhost:${PORT}`);

@@ -69,6 +69,13 @@ export default function useWorldSocket({ user, token }) {
 
     const handleConnectError = () => setStatus('offline');
 
+    // Another tab/instance claimed this account; stop this socket so only one
+    // avatar per user remains in the shared roster.
+    const handleEvicted = () => {
+      setStatus('offline');
+      socket.disconnect();
+    };
+
     const handleState = (data) => {
       if (data.bounds) setBounds({ ...DEFAULT_BOUNDS, ...data.bounds });
       selfIdRef.current = data.selfId;
@@ -154,6 +161,7 @@ export default function useWorldSocket({ user, token }) {
 
     socket.on('connect', handleConnect);
     socket.on('connect_error', handleConnectError);
+    socket.on('world:evicted', handleEvicted);
     socket.on('disconnect', () => setStatus('offline'));
     socket.on('world:state', handleState);
     socket.on('world:player-joined', handleJoined);

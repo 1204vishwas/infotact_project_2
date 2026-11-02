@@ -5,17 +5,25 @@ const { JWT_SECRET } = require('../middleware/auth');
 const {
   OFFICE_BOUNDS,
   HEARING_RADIUS,
-  players,
+  worldStore,
   sanitizePosition,
-  toPublicPlayer,
-  listPlayers,
-  getPlayerByUserId
+  toPublicPlayer
 } = require('./worldState');
 
 // Throttle DB writes per player so that 30-60Hz client movement does not
-// hammer MongoDB. The in-memory roster is the source of truth in real time.
+// hammer MongoDB. The shared realtime roster is the source of truth in real time.
 const lastPersistAt = new Map();
 const PERSIST_INTERVAL_MS = 2500;
+
+// Sockets owned by this process. The shared store also contains players owned
+// by other Node instances, so only these keys are heartbeated/cleaned locally.
+const localSocketIds = new Set();
+let maintenanceStarted = false;
+
+// Proximity snapshots are expensive (HGETALL) and only drive HUD grouping, so
+// emit them at ~4Hz even if clients are moving at 60Hz.
+const PROXIMITY_BROADCAST_MS = 250;
+let lastProximityAt = 0;
 
 // A server-approved offer opens a short authorization window for that exact
 // pair. The answer and trickle ICE can then finish even if an avatar drifts
@@ -83,6 +91,39 @@ function persistPosition(player) {
   });
 }
 
+async function getOwnPlayer(socketId) {
+  return worldStore.getLocal(socketId) || worldStore.get(socketId);
+}
+
+async function broadcastProximity(io, force = false) {
+  const now = Date.now();
+  if (!force && now - lastProximityAt < PROXIMITY_BROADCAST_MS) return;
+  lastProximityAt = now;
+  const roster = await worldStore.values();
+  io.emit('world:proximity-update', {
+    timestamp: now,
+    players: roster.map(toPublicPlayer)
+  });
+}
+
+async function removePlayer(socket, io, reason) {
+  try {
+    const player = await worldStore.get(socket.id);
+    localSocketIds.delete(socket.id);
+    if (!player) return;
+
+    await worldStore.delete(socket.id);
+    lastPersistAt.delete(player.id);
+    revokePairsFor(player.id);
+
+    io.emit('world:player-left', { id: player.id });
+    io.emit('world:presence', { count: await worldStore.size() });
+    await broadcastProximity(io, true);
+  } catch (err) {
+    console.error(`[world:${reason}] failed:`, err.message);
+  }
+}
+
 function initWorldSocket(io) {
   // Authenticate every socket using the same JWT issued by the auth module.
   // Guests (offline/local demo tokens) are still allowed into the world so the
@@ -101,106 +142,120 @@ function initWorldSocket(io) {
     next();
   });
 
+  if (!maintenanceStarted) {
+    maintenanceStarted = true;
+    worldStore.startMaintenance({ localKeys: () => Array.from(localSocketIds) });
+  }
+
   io.on('connection', (socket) => {
     // -------------------------------------------------------------------
     // world:join — register the avatar into the office and hydrate the client
     // -------------------------------------------------------------------
-    socket.on('world:join', (profile = {}) => {
-      if (players.has(socket.id)) return;
+    socket.on('world:join', async (profile = {}) => {
+      try {
+        if (await worldStore.get(socket.id)) return;
 
-      const spawn = sanitizePosition(
-        profile.x != null ? profile.x : Math.random() * OFFICE_BOUNDS.width,
-        profile.y != null ? profile.y : Math.random() * OFFICE_BOUNDS.height
-      );
+        const spawn = sanitizePosition(
+          profile.x != null ? profile.x : Math.random() * OFFICE_BOUNDS.width,
+          profile.y != null ? profile.y : Math.random() * OFFICE_BOUNDS.height
+        );
 
-      const player = {
-        id: (socket.data.user && socket.data.user.id) || profile.id || socket.id,
-        socketId: socket.id,
-        name: profile.name || 'Anonymous Colleague',
-        username: profile.username || 'guest',
-        role: profile.role || 'Team Member',
-        department: profile.department || 'Engineering',
-        avatarColor: profile.avatarColor || '#6366f1',
-        avatarIcon: profile.avatarIcon || 'user',
-        status: profile.status || 'online',
-        x: spawn.x,
-        y: spawn.y,
-        joinedAt: Date.now()
-      };
+        const player = {
+          id: (socket.data.user && socket.data.user.id) || profile.id || socket.id,
+          socketId: socket.id,
+          name: profile.name || 'Anonymous Colleague',
+          username: profile.username || 'guest',
+          role: profile.role || 'Team Member',
+          department: profile.department || 'Engineering',
+          avatarColor: profile.avatarColor || '#6366f1',
+          avatarIcon: profile.avatarIcon || 'user',
+          status: profile.status || 'online',
+          x: spawn.x,
+          y: spawn.y,
+          joinedAt: Date.now(),
+          updatedAt: Date.now()
+        };
 
-      // Enforce ONE avatar per user. A tab refresh, React StrictMode double
-      // mount, or a reconnect race can otherwise leave a ghost socket for the
-      // same account — inflating the presence count while the map de-dupes it
-      // back to a single drawn avatar ("3 online, 2 visible").
-      const existing = getPlayerByUserId(player.id);
-      if (existing) {
-        players.delete(existing.socketId);
-        lastPersistAt.delete(existing.id);
-        revokePairsFor(existing.id);
-        io.emit('world:player-left', { id: existing.id });
+        // Enforce ONE avatar per user across every Node instance. A tab
+        // refresh, React StrictMode double mount, or a reconnect race can
+        // otherwise leave a ghost socket for the same account — inflating the
+        // presence count while the map de-dupes it back to a single avatar.
+        const existing = await worldStore.find((p) => p.id === player.id);
+        if (existing && existing.socketId !== socket.id) {
+          await worldStore.delete(existing.socketId);
+          localSocketIds.delete(existing.socketId);
+          lastPersistAt.delete(existing.id);
+          revokePairsFor(existing.id);
+          io.to(existing.socketId).emit('world:evicted', { reason: 'duplicate-session' });
+          io.emit('world:player-left', { id: existing.id });
+        }
+
+        await worldStore.set(socket.id, player);
+        localSocketIds.add(socket.id);
+
+        // Full snapshot to the newcomer (including their own resolved id).
+        const roster = await worldStore.values();
+        socket.emit('world:state', {
+          bounds: OFFICE_BOUNDS,
+          selfId: player.id,
+          players: roster.map(toPublicPlayer)
+        });
+
+        // Tell everyone else a new colleague walked in.
+        socket.broadcast.emit('world:player-joined', toPublicPlayer(player));
+        io.emit('world:presence', { count: await worldStore.size() });
+        await broadcastProximity(io, true);
+
+        persistPosition(player);
+      } catch (err) {
+        console.error('[world:join] failed:', err.message);
       }
-
-      players.set(socket.id, player);
-
-      // Full snapshot to the newcomer (including their own resolved id).
-      socket.emit('world:state', {
-        bounds: OFFICE_BOUNDS,
-        selfId: player.id,
-        players: listPlayers()
-      });
-
-      // Notify all clients about proximity groups (users within earshot)
-      io.emit('world:proximity-update', {
-        timestamp: Date.now(),
-        players: listPlayers()
-      });
-
-      // Tell everyone else a new colleague walked in.
-      socket.broadcast.emit('world:player-joined', toPublicPlayer(player));
-      io.emit('world:presence', { count: players.size });
-      io.emit('world:proximity-update', {
-        timestamp: Date.now(),
-        players: listPlayers()
-      });
-
-      persistPosition(player);
     });
 
     // -------------------------------------------------------------------
     // world:move — high-frequency coordinate broadcast from the mover
     // -------------------------------------------------------------------
-    socket.on('world:move', (payload = {}) => {
-      const player = players.get(socket.id);
-      if (!player) return;
+    socket.on('world:move', async (payload = {}) => {
+      try {
+        const player = await getOwnPlayer(socket.id);
+        if (!player) return;
 
-      const next = sanitizePosition(payload.x, payload.y);
-      if (next.x === player.x && next.y === player.y) return;
+        const next = sanitizePosition(payload.x, payload.y);
+        if (next.x === player.x && next.y === player.y) return;
 
-      player.x = next.x;
-      player.y = next.y;
-      player.updatedAt = Date.now();
+        player.x = next.x;
+        player.y = next.y;
+        player.updatedAt = Date.now();
 
-      socket.broadcast.emit('world:player-moved', {
-        id: player.id,
-        x: player.x,
-        y: player.y
-      });
+        await worldStore.set(socket.id, player);
 
-      // Emit proximity update after movement to allow clients to form groups
-      io.emit('world:proximity-update', {
-        timestamp: Date.now(),
-        players: listPlayers()
-      });
+        socket.broadcast.emit('world:player-moved', {
+          id: player.id,
+          x: player.x,
+          y: player.y
+        });
 
-      persistPosition(player);
+        // Throttled proximity snapshot so clients can form earshot groups.
+        await broadcastProximity(io);
+
+        persistPosition(player);
+      } catch (err) {
+        console.error('[world:move] failed:', err.message);
+      }
     });
 
     // Lightweight status flips (idle / in-meeting / mic muted cosmetics).
-    socket.on('world:status', (payload = {}) => {
-      const player = players.get(socket.id);
-      if (!player) return;
-      player.status = payload.status || player.status;
-      io.emit('world:player-status', { id: player.id, status: player.status });
+    socket.on('world:status', async (payload = {}) => {
+      try {
+        const player = await getOwnPlayer(socket.id);
+        if (!player) return;
+        player.status = payload.status || player.status;
+        player.updatedAt = Date.now();
+        await worldStore.set(socket.id, player);
+        io.emit('world:player-status', { id: player.id, status: player.status });
+      } catch (err) {
+        console.error('[world:status] failed:', err.message);
+      }
     });
 
     // -------------------------------------------------------------------
@@ -208,149 +263,141 @@ function initWorldSocket(io) {
     // colleagues. The server never inspects media; it only forwards the
     // offer/answer/candidate payloads to an authorized nearby peer.
     //
-    // Authority comes from the in-memory roster (player.x / player.y), which
-    // is updated by sanitized `world:move` events — never from signaling
-    // payload coordinates. An accepted offer authorizes the pair for a short
-    // grace window so answer/ICE can finish while avatars are moving.
+    // Authority comes from the shared roster (player.x / player.y), which is
+    // updated by sanitized `world:move` events — never from signaling payload
+    // coordinates. An accepted offer authorizes the pair for a short grace
+    // window so answer/ICE can finish while avatars are moving.
     // -------------------------------------------------------------------
-    socket.on('world:offer', (payload = {}) => {
-      const player = players.get(socket.id);
-      if (!player) {
-        rejectSignal('world:offer', 'sender socket has no registered player', { socket: idRef(socket.id) });
-        return;
-      }
-      if (!payload.offer) {
-        rejectSignal('world:offer', 'payload has no offer', { from: idRef(player.id) });
-        return;
-      }
-      const target = getPlayerByUserId(payload.target);
-      if (!target || target.socketId === socket.id) {
-        rejectSignal('world:offer', 'target not found', {
-          from: idRef(player.id),
-          target: idRef(payload.target)
-        });
-        return;
-      }
+    socket.on('world:offer', async (payload = {}) => {
+      try {
+        const player = await getOwnPlayer(socket.id);
+        if (!player) {
+          rejectSignal('world:offer', 'sender socket has no registered player', { socket: idRef(socket.id) });
+          return;
+        }
+        if (!payload.offer) {
+          rejectSignal('world:offer', 'payload has no offer', { from: idRef(player.id) });
+          return;
+        }
+        const target = await worldStore.find((p) => p.id === payload.target);
+        if (!target || target.socketId === socket.id) {
+          rejectSignal('world:offer', 'target not found', {
+            from: idRef(player.id),
+            target: idRef(payload.target)
+          });
+          return;
+        }
 
-      const distance = distanceBetween(player, target);
-      if (distance > HEARING_RADIUS) {
-        rejectSignal('world:offer', 'target outside hearing radius', {
-          from: idRef(player.id),
-          target: idRef(target.id),
-          distance: Math.round(distance)
-        });
-        return;
-      }
+        const distance = distanceBetween(player, target);
+        if (distance > HEARING_RADIUS) {
+          rejectSignal('world:offer', 'target outside hearing radius', {
+            from: idRef(player.id),
+            target: idRef(target.id),
+            distance: Math.round(distance)
+          });
+          return;
+        }
 
-      authorizePair(player.id, target.id);
-      io.to(target.socketId).emit('world:offer', { from: player.id, offer: payload.offer });
+        authorizePair(player.id, target.id);
+        io.to(target.socketId).emit('world:offer', { from: player.id, offer: payload.offer });
+      } catch (err) {
+        rejectSignal('world:offer', 'relay failed', { error: err.message });
+      }
     });
 
-    socket.on('world:answer', (payload = {}) => {
-      const player = players.get(socket.id);
-      if (!player) {
-        rejectSignal('world:answer', 'sender socket has no registered player', { socket: idRef(socket.id) });
-        return;
-      }
-      if (!payload.answer) {
-        rejectSignal('world:answer', 'payload has no answer', { from: idRef(player.id) });
-        return;
-      }
-      const target = getPlayerByUserId(payload.target);
-      if (!target || target.socketId === socket.id) {
-        rejectSignal('world:answer', 'target not found', {
-          from: idRef(player.id),
-          target: idRef(payload.target)
-        });
-        return;
-      }
+    socket.on('world:answer', async (payload = {}) => {
+      try {
+        const player = await getOwnPlayer(socket.id);
+        if (!player) {
+          rejectSignal('world:answer', 'sender socket has no registered player', { socket: idRef(socket.id) });
+          return;
+        }
+        if (!payload.answer) {
+          rejectSignal('world:answer', 'payload has no answer', { from: idRef(player.id) });
+          return;
+        }
+        const target = await worldStore.find((p) => p.id === payload.target);
+        if (!target || target.socketId === socket.id) {
+          rejectSignal('world:answer', 'target not found', {
+            from: idRef(player.id),
+            target: idRef(payload.target)
+          });
+          return;
+        }
 
-      const auth = getPairAuth(player.id, target.id);
-      if (!auth) {
-        rejectSignal('world:answer', 'no accepted nearby offer for pair', {
-          from: idRef(player.id),
-          target: idRef(target.id)
-        });
-        return;
-      }
+        const auth = getPairAuth(player.id, target.id);
+        if (!auth) {
+          rejectSignal('world:answer', 'no accepted nearby offer for pair', {
+            from: idRef(player.id),
+            target: idRef(target.id)
+          });
+          return;
+        }
 
-      const within = distanceBetween(player, target) <= HEARING_RADIUS;
-      if (!within && Date.now() > auth.expiresAt) {
-        signalAuth.delete(pairKey(player.id, target.id));
-        rejectSignal('world:answer', 'outside hearing radius and grace window expired', {
-          from: idRef(player.id),
-          target: idRef(target.id)
-        });
-        return;
-      }
+        const within = distanceBetween(player, target) <= HEARING_RADIUS;
+        if (!within && Date.now() > auth.expiresAt) {
+          signalAuth.delete(pairKey(player.id, target.id));
+          rejectSignal('world:answer', 'outside hearing radius and grace window expired', {
+            from: idRef(player.id),
+            target: idRef(target.id)
+          });
+          return;
+        }
 
-      io.to(target.socketId).emit('world:answer', { from: player.id, answer: payload.answer });
+        io.to(target.socketId).emit('world:answer', { from: player.id, answer: payload.answer });
+      } catch (err) {
+        rejectSignal('world:answer', 'relay failed', { error: err.message });
+      }
     });
 
-    socket.on('world:ice-candidate', (payload = {}) => {
-      const player = players.get(socket.id);
-      if (!player) {
-        rejectSignal('world:ice-candidate', 'sender socket has no registered player', { socket: idRef(socket.id) });
-        return;
-      }
-      if (!payload.candidate) return;
-      const target = getPlayerByUserId(payload.target);
-      if (!target || target.socketId === socket.id) {
-        rejectSignal('world:ice-candidate', 'target not found', {
-          from: idRef(player.id),
-          target: idRef(payload.target)
-        });
-        return;
-      }
+    socket.on('world:ice-candidate', async (payload = {}) => {
+      try {
+        const player = await getOwnPlayer(socket.id);
+        if (!player) {
+          rejectSignal('world:ice-candidate', 'sender socket has no registered player', { socket: idRef(socket.id) });
+          return;
+        }
+        if (!payload.candidate) return;
+        const target = await worldStore.find((p) => p.id === payload.target);
+        if (!target || target.socketId === socket.id) {
+          rejectSignal('world:ice-candidate', 'target not found', {
+            from: idRef(player.id),
+            target: idRef(payload.target)
+          });
+          return;
+        }
 
-      const auth = getPairAuth(player.id, target.id);
-      if (!auth) {
-        rejectSignal('world:ice-candidate', 'no accepted nearby offer for pair', {
-          from: idRef(player.id),
-          target: idRef(target.id)
-        });
-        return;
-      }
+        const auth = getPairAuth(player.id, target.id);
+        if (!auth) {
+          rejectSignal('world:ice-candidate', 'no accepted nearby offer for pair', {
+            from: idRef(player.id),
+            target: idRef(target.id)
+          });
+          return;
+        }
 
-      const within = distanceBetween(player, target) <= HEARING_RADIUS;
-      if (!within && Date.now() > auth.expiresAt) {
-        signalAuth.delete(pairKey(player.id, target.id));
-        rejectSignal('world:ice-candidate', 'outside hearing radius and grace window expired', {
-          from: idRef(player.id),
-          target: idRef(target.id)
-        });
-        return;
-      }
+        const within = distanceBetween(player, target) <= HEARING_RADIUS;
+        if (!within && Date.now() > auth.expiresAt) {
+          signalAuth.delete(pairKey(player.id, target.id));
+          rejectSignal('world:ice-candidate', 'outside hearing radius and grace window expired', {
+            from: idRef(player.id),
+            target: idRef(target.id)
+          });
+          return;
+        }
 
-      io.to(target.socketId).emit('world:ice-candidate', { from: player.id, candidate: payload.candidate });
+        io.to(target.socketId).emit('world:ice-candidate', { from: player.id, candidate: payload.candidate });
+      } catch (err) {
+        rejectSignal('world:ice-candidate', 'relay failed', { error: err.message });
+      }
     });
 
     socket.on('world:leave', () => {
-      const player = players.get(socket.id);
-      if (!player) return;
-      players.delete(socket.id);
-      lastPersistAt.delete(player.id);
-      revokePairsFor(player.id);
-      io.emit('world:player-left', { id: player.id });
-      io.emit('world:presence', { count: players.size });
-      io.emit('world:proximity-update', {
-        timestamp: Date.now(),
-        players: listPlayers()
-      });
+      removePlayer(socket, io, 'leave');
     });
 
     socket.on('disconnect', () => {
-      const player = players.get(socket.id);
-      if (!player) return;
-      players.delete(socket.id);
-      lastPersistAt.delete(player.id);
-      revokePairsFor(player.id);
-      io.emit('world:player-left', { id: player.id });
-      io.emit('world:presence', { count: players.size });
-      io.emit('world:proximity-update', {
-        timestamp: Date.now(),
-        players: listPlayers()
-      });
+      removePlayer(socket, io, 'disconnect');
     });
   });
 
