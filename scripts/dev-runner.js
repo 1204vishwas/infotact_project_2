@@ -49,19 +49,26 @@ function runVerificationSuite() {
   }
 
   console.log(`${colors.bold}${colors.blue}▶ PHASE 1: RUNNING AUTOMATED VERIFICATION SUITE${colors.reset}`);
-  console.log(`${colors.dim}  Testing Spatial Engine latency (<20ms SLA) & Two-Browser WebRTC Audio Gatekeeper...${colors.reset}\n`);
+  console.log(`${colors.dim}  Testing Spatial Engine latency (<20ms SLA), Two-Browser WebRTC Gatekeeper & Multi-Node Redis Scaling...${colors.reset}\n`);
 
   try {
     // 1. Spatial Audit Benchmark
-    console.log(`${colors.cyan}[1/2] Executing Spatial Engine Audit & Latency Benchmark...${colors.reset}`);
+    console.log(`${colors.cyan}[1/3] Executing Spatial Engine Audit & Latency Benchmark...${colors.reset}`);
     execSync('node scripts/audit-benchmark.js', {
       cwd: BACKEND_DIR,
       stdio: 'inherit'
     });
 
     // 2. Dual-Browser WebRTC Audio Check Simulation
-    console.log(`\n${colors.magenta}[2/2] Executing Dual-Browser WebRTC Audio Check Simulation...${colors.reset}`);
+    console.log(`\n${colors.magenta}[2/3] Executing Dual-Browser WebRTC Audio Check Simulation...${colors.reset}`);
     execSync('node scripts/audio-check-demo.js', {
+      cwd: BACKEND_DIR,
+      stdio: 'inherit'
+    });
+
+    // 3. Multi-Node Socket.io & Redis Pub/Sub Scaling Benchmark
+    console.log(`\n${colors.blue}[3/3] Executing Multi-Node Socket.io & Redis Pub/Sub Scaling Verification...${colors.reset}`);
+    execSync('node scripts/multi-node-cluster-demo.js', {
       cwd: BACKEND_DIR,
       stdio: 'inherit'
     });

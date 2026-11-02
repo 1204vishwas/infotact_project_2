@@ -15,6 +15,74 @@ const RTC_CONFIG = {
   ]
 };
 
+/**
+ * Munges WebRTC Session Description Protocol (SDP) to enforce optimal voice mesh settings:
+ * 1. Opus 32kbps wideband bitrate cap (saves up to 75% upstream bandwidth vs 128kbps stereo)
+ * 2. DTX (Discontinuous Transmission) silence suppression (cuts bandwidth 80-90% when listening)
+ * 3. In-band FEC (Forward Error Correction) for packet loss recovery
+ * 4. Mono channel mode (spatialization is calculated client-side via Web Audio StereoPanner)
+ */
+export function optimizeAudioSdp(sdp, options = {}) {
+  if (!sdp || typeof sdp !== 'string') return sdp;
+
+  const {
+    bitrate = 32000,
+    enableDtx = true,
+    enableFec = true,
+    mono = true
+  } = options;
+
+  let lines = sdp.split(/\r?\n/);
+
+  // Identify Opus dynamic RTP payload number
+  let opusPayload = '111';
+  for (const line of lines) {
+    const match = line.match(/^a=rtpmap:(\d+)\s+opus\/48000/i);
+    if (match) {
+      opusPayload = match[1];
+      break;
+    }
+  }
+
+  let fmtpUpdated = false;
+  lines = lines.map((line) => {
+    if (line.startsWith(`a=fmtp:${opusPayload}`)) {
+      fmtpUpdated = true;
+      let fmtp = line;
+      if (bitrate && !fmtp.includes('maxaveragebitrate')) {
+        fmtp += `;maxaveragebitrate=${bitrate}`;
+      }
+      if (enableDtx && !fmtp.includes('usedtx')) {
+        fmtp += ';usedtx=1';
+      }
+      if (enableFec && !fmtp.includes('useinbandfec')) {
+        fmtp += ';useinbandfec=1';
+      }
+      if (mono && !fmtp.includes('stereo=')) {
+        fmtp += ';stereo=0;sprop-stereo=0';
+      }
+      if (!fmtp.includes('minptime=')) {
+        fmtp += ';minptime=10';
+      }
+      return fmtp;
+    }
+    return line;
+  });
+
+  if (!fmtpUpdated) {
+    const rtpIdx = lines.findIndex((l) => l.startsWith(`a=rtpmap:${opusPayload}`));
+    if (rtpIdx !== -1) {
+      lines.splice(
+        rtpIdx + 1,
+        0,
+        `a=fmtp:${opusPayload} minptime=10;useinbandfec=1;usedtx=1;maxaveragebitrate=${bitrate};stereo=0;sprop-stereo=0`
+      );
+    }
+  }
+
+  return lines.join('\r\n') + '\r\n';
+}
+
 export class WebRTCAudioManager {
   constructor({ onAudioLevelUpdate, onConnectionStateChange, showToast } = {}) {
     this.localStream = null;
@@ -43,6 +111,11 @@ export class WebRTCAudioManager {
     // Audio level cache (0.0 to 1.0)
     this.localAudioLevel = 0;
     this.peerAudioLevels = new Map(); // socketId -> level
+
+    // WebRTC Mesh Scaling & Density Optimization
+    this.maxMeshPeers = 6; // Max concurrent active audio connections (Cocktail Party limit)
+    this.culledPeers = new Set(); // In-range peers on standby due to density limit
+    this.hysteresisRadius = 115; // Proximity release threshold buffer
 
     // Loopback test session
     this.loopbackSession = null;
@@ -373,7 +446,7 @@ export class WebRTCAudioManager {
 
     peerData.audioElement = audioElement;
 
-    // 2. Setup Web Audio API node graph for distance attenuation and Canvas visualizer
+    // 2. Setup Web Audio API node graph with Stereo Panning, Gain Attenuation & Canvas Visualizer
     try {
       const audioCtx = this.getAudioContext();
       if (audioCtx) {
@@ -383,10 +456,19 @@ export class WebRTCAudioManager {
         analyser.fftSize = 64;
         analyser.smoothingTimeConstant = 0.6;
 
-        source.connect(gainNode);
+        let pannerNode = null;
+        if (typeof audioCtx.createStereoPanner === 'function') {
+          pannerNode = audioCtx.createStereoPanner();
+          source.connect(pannerNode);
+          pannerNode.connect(gainNode);
+        } else {
+          source.connect(gainNode);
+        }
+
         gainNode.connect(analyser);
 
         peerData.gainNode = gainNode;
+        peerData.pannerNode = pannerNode;
         peerData.analyser = analyser;
       }
     } catch (err) {
@@ -395,7 +477,7 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Initiate a WebRTC offer for a target peer
+   * Initiate a WebRTC offer for a target peer (with Opus 32kbps, DTX & FEC optimization)
    */
   async createOffer(peerSocketId) {
     const peerData = this.peers.get(peerSocketId);
@@ -409,13 +491,22 @@ export class WebRTCAudioManager {
       voiceActivityDetection: true
     });
 
-    await pc.setLocalDescription(offer);
-    console.log(`[WebRTC P2P] Created and set local offer for peer: ${peerSocketId}`);
-    return offer;
+    // Apply WebRTC Mesh Bandwidth & Codec Optimization
+    const optimizedSdp = optimizeAudioSdp(offer.sdp, {
+      bitrate: 32000,
+      enableDtx: true,
+      enableFec: true,
+      mono: true
+    });
+    const optimizedOffer = { type: offer.type, sdp: optimizedSdp };
+
+    await pc.setLocalDescription(optimizedOffer);
+    console.log(`[WebRTC P2P] Created and set optimized local offer (32kbps Opus + DTX) for peer: ${peerSocketId}`);
+    return optimizedOffer;
   }
 
   /**
-   * Handle an incoming WebRTC offer from a caller
+   * Handle an incoming WebRTC offer from a caller (with Opus 32kbps, DTX & FEC optimization)
    */
   async handleOffer(callerSocketId, offer) {
     const peerData = this.peers.get(callerSocketId);
@@ -434,9 +525,17 @@ export class WebRTCAudioManager {
 
     // Create and set local answer
     const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    console.log(`[WebRTC P2P] Created and set local answer for caller: ${callerSocketId}`);
-    return answer;
+    const optimizedSdp = optimizeAudioSdp(answer.sdp, {
+      bitrate: 32000,
+      enableDtx: true,
+      enableFec: true,
+      mono: true
+    });
+    const optimizedAnswer = { type: answer.type, sdp: optimizedSdp };
+
+    await pc.setLocalDescription(optimizedAnswer);
+    console.log(`[WebRTC P2P] Created and set optimized local answer (32kbps Opus + DTX) for caller: ${callerSocketId}`);
+    return optimizedAnswer;
   }
 
   /**
@@ -508,19 +607,32 @@ export class WebRTCAudioManager {
 
   /**
    * Dynamically adjust remote peer audio volume based on Euclidean distance on canvas
-   * Distance <= 100px: Gain attenuates smoothly between 10% and 100%
-   * Distance > 100px: Gain is 0% (silence)
+   * Supports:
+   * - Smooth exponential gain attenuation (10% to 100%)
+   * - Hysteresis release zone (100px - 115px soft fade)
+   * - Binaural 2D spatial stereo panning via Web Audio StereoPannerNode
+   * - Density culling state (muting culled peers to prevent CPU/audio saturation)
    */
-  setPeerDistance(peerSocketId, distance, maxRadius = 100) {
+  setPeerDistance(peerSocketId, distance, maxRadius = 100, deltaX = null, isCulled = false, hysteresisRadius = 115) {
     const peerData = this.peers.get(peerSocketId);
     if (!peerData) return;
 
     peerData.distance = distance;
+    peerData.isCulled = !!isCulled;
 
     let gain = 0;
-    if (distance <= maxRadius) {
+    if (isCulled) {
+      // Culled peer: connection kept alive on standby, audio muted
+      gain = 0;
+    } else if (distance <= maxRadius) {
       // Smooth linear attenuation: 1.0 (at 0px) down to 0.1 (at 100px)
       gain = Math.max(0.1, 1 - (distance / maxRadius) * 0.9);
+    } else if (distance <= hysteresisRadius) {
+      // Soft fade in hysteresis buffer zone (100px to 115px)
+      const fadeProgress = (distance - maxRadius) / (hysteresisRadius - maxRadius);
+      gain = Math.max(0, 0.1 * (1 - fadeProgress));
+    } else {
+      gain = 0;
     }
 
     peerData.gain = gain;
@@ -530,12 +642,79 @@ export class WebRTCAudioManager {
       peerData.audioElement.volume = gain;
     }
 
-    // Apply to Web Audio API GainNode if present
-    if (peerData.gainNode && this.audioContext) {
+    // Apply smooth click-free gain change to Web Audio GainNode
+    const audioCtx = this.getAudioContext();
+    if (peerData.gainNode && audioCtx) {
       try {
-        peerData.gainNode.gain.setTargetAtTime(gain, this.audioContext.currentTime, 0.05);
+        peerData.gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
+        peerData.gainNode.gain.setTargetAtTime(gain, audioCtx.currentTime, 0.04);
       } catch (e) {}
     }
+
+    // Apply 2D spatial stereo panning
+    if (peerData.pannerNode && audioCtx && deltaX !== null) {
+      try {
+        const pan = Math.max(-1, Math.min(1, deltaX / maxRadius));
+        peerData.pannerNode.pan.cancelScheduledValues(audioCtx.currentTime);
+        peerData.pannerNode.pan.setTargetAtTime(pan, audioCtx.currentTime, 0.04);
+        peerData.pan = pan;
+      } catch (e) {}
+    }
+  }
+
+  /**
+   * Optimize WebRTC mesh topology based on avatar density
+   * Prioritizes top K closest peers and flags excess peers as culled/standby.
+   */
+  updateMeshTopology(inRangePeers = []) {
+    const sorted = [...inRangePeers].sort((a, b) => (a.distance || 0) - (b.distance || 0));
+    const active = [];
+    const culled = [];
+
+    sorted.forEach((p, idx) => {
+      const socketId = p.socketId || p.id;
+      if (idx < this.maxMeshPeers) {
+        active.push(socketId);
+        this.culledPeers.delete(socketId);
+      } else {
+        culled.push(socketId);
+        this.culledPeers.add(socketId);
+      }
+    });
+
+    // Apply culled volume state
+    this.culledPeers.forEach((socketId) => {
+      const peerData = this.peers.get(socketId);
+      if (peerData) {
+        this.setPeerDistance(socketId, peerData.distance || 100, 100, null, true);
+      }
+    });
+
+    return {
+      maxMeshPeers: this.maxMeshPeers,
+      activePeers: active,
+      culledPeers: culled,
+      activeCount: active.length,
+      culledCount: culled.length
+    };
+  }
+
+  /**
+   * Retrieve WebRTC Mesh Optimization & Scaling Metrics
+   */
+  getMeshOptimizationStats() {
+    return {
+      maxMeshPeers: this.maxMeshPeers,
+      activeMeshPeers: Math.max(0, this.peers.size - this.culledPeers.size),
+      culledPeersCount: this.culledPeers.size,
+      totalConnectedPeers: this.peers.size,
+      opusBitrateKbps: 32,
+      dtxEnabled: true,
+      fecEnabled: true,
+      spatialStereoPanning: true,
+      hysteresisBufferPx: this.hysteresisRadius - 100,
+      bandwidthSavingsEstimate: '~75%'
+    };
   }
 
   /**

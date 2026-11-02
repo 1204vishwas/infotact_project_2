@@ -7,9 +7,11 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "audit": "node scripts/audit-benchmark.js",
-    "audio-check": "node scripts/audio-check-demo.js"
+    "audio-check": "node scripts/audio-check-demo.js",
+    "cluster-check": "node scripts/multi-node-cluster-demo.js"
   },
   "dependencies": {
+    "@socket.io/redis-adapter": "^8.3.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
@@ -17,6 +19,7 @@
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
     "proxispeak-project-2": "file:..",
+    "redis": "^6.3.1",
     "socket.io": "^4.8.4"
   }
 }
