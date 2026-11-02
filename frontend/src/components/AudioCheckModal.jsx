@@ -35,7 +35,8 @@ export default function AudioCheckModal({
   peers,
   peerConnectionStates,
   onMoveToDistance,
-  showToast
+  showToast,
+  clusterInfo
 }) {
   const [selectedPeerId, setSelectedPeerId] = useState(null);
   const [stats, setStats] = useState(null);
@@ -528,6 +529,44 @@ export default function AudioCheckModal({
                   <div className="mt-2 flex items-center justify-between text-[11px] text-slate-400">
                     <span>WebRTC Track: {activePeer ? 'ATTACHED' : 'WAITING'}</span>
                     <span>Gain: {isWithin100px ? `${Math.round(Math.max(10, (1 - currentDistance / 100) * 100))}%` : '0% (Muted)'}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Mesh Scaling & Redis Pub/Sub Scaling Matrix */}
+              <div className="p-3.5 rounded-xl bg-slate-900/80 border border-indigo-500/30">
+                <div className="flex items-center justify-between mb-2.5">
+                  <span className="text-xs font-semibold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-indigo-400" /> WebRTC Mesh Optimization & Redis Pub/Sub
+                  </span>
+                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 font-mono border border-indigo-500/20">
+                    Instance: {clusterInfo?.nodeInstanceId || 'local'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-center">
+                  <div className="p-2 rounded-lg bg-slate-950/70 border border-slate-800">
+                    <p className="text-[10px] text-slate-400 uppercase font-semibold">Redis Pub/Sub</p>
+                    <p className="text-xs font-bold text-emerald-400 mt-0.5">
+                      {clusterInfo?.clusterMode === 'redis' ? 'Redis Cluster' : 'In-Memory Pub/Sub'}
+                    </p>
+                    <p className="text-[10px] text-slate-500">Cross-Node Sync</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-950/70 border border-slate-800">
+                    <p className="text-[10px] text-slate-400 uppercase font-semibold">Opus Bitrate & DTX</p>
+                    <p className="text-xs font-bold text-cyan-300 mt-0.5">32 kbps + DTX</p>
+                    <p className="text-[10px] text-emerald-400">~75% Bandwidth Saved</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-950/70 border border-slate-800">
+                    <p className="text-[10px] text-slate-400 uppercase font-semibold">Max Audio Peers</p>
+                    <p className="text-xs font-bold text-purple-300 mt-0.5">
+                      {webrtcManager?.peers.size || 0} / {clusterInfo?.maxMeshPeers || 6} Active
+                    </p>
+                    <p className="text-[10px] text-slate-500">Density Culling</p>
+                  </div>
+                  <div className="p-2 rounded-lg bg-slate-950/70 border border-slate-800">
+                    <p className="text-[10px] text-slate-400 uppercase font-semibold">Boundary Hysteresis</p>
+                    <p className="text-xs font-bold text-amber-300 mt-0.5">100px / 115px</p>
+                    <p className="text-[10px] text-slate-500">Anti-Thrashing Active</p>
                   </div>
                 </div>
               </div>

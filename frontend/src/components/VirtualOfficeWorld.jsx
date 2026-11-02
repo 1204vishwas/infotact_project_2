@@ -59,6 +59,12 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isSpatialAuditOpen, setIsSpatialAuditOpen] = useState(false);
   const [isAudioCheckOpen, setIsAudioCheckOpen] = useState(false);
+  const [clusterInfo, setClusterInfo] = useState({
+    clusterMode: 'in-memory-broker',
+    nodeInstanceId: 'local',
+    maxMeshPeers: 6,
+    hysteresisRadius: 115
+  });
   const [recentWebRTCAlert, setRecentWebRTCAlert] = useState(null);
   const [peerConnectionStates, setPeerConnectionStates] = useState({});
   const [botAudioActive, setBotAudioActive] = useState(false);
@@ -257,8 +263,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     });
 
     // Receive space state (initial active peers)
-    socket.on('space-state', ({ self, peers: existingPeers, totalOnline }) => {
+    socket.on('space-state', ({ self, peers: existingPeers, totalOnline, clusterMode, nodeInstanceId, maxMeshPeers, hysteresisRadiusLimit }) => {
       setOnlineCount(totalOnline || 1);
+      if (clusterMode || nodeInstanceId) {
+        setClusterInfo({
+          clusterMode: clusterMode || 'in-memory-broker',
+          nodeInstanceId: nodeInstanceId || 'local',
+          maxMeshPeers: maxMeshPeers || 6,
+          hysteresisRadius: hysteresisRadiusLimit || 115
+        });
+      }
       const newPeers = new Map();
       if (Array.isArray(existingPeers)) {
         existingPeers.forEach((p) => {
@@ -336,19 +350,28 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     // ====================================================
 
     // Peer entered 100-pixel radius (Server permitted WebRTC offer)
-    socket.on('proximity-peer-entered', async ({ peer, distance, maxRadius, gain, shouldInitiateOffer }) => {
-      console.log(`[WebRTC Proximity] '${peer.name}' entered 100px earshot (${distance}px). Should offer: ${shouldInitiateOffer}`);
+    socket.on('proximity-peer-entered', async ({ peer, distance, maxRadius, gain, isCulled, shouldInitiateOffer }) => {
+      console.log(`[WebRTC Proximity] '${peer.name}' entered 100px earshot (${distance}px). Should offer: ${shouldInitiateOffer}, Culled: ${isCulled}`);
       setRecentWebRTCAlert({
         type: 'entered',
         peerName: peer.name,
         distance,
-        gain,
+        gain: isCulled ? 0 : gain,
+        isCulled,
         timestamp: Date.now()
       });
-      showToast(`${peer.name} entered 100px earshot (${distance}px)! WebRTC audio active (${gain}% gain).`, 'success');
+
+      if (isCulled) {
+        showToast(`${peer.name} is in earshot (${distance}px), but audio is culled to standby (max 6 peer limit).`, 'info');
+      } else {
+        showToast(`${peer.name} entered 100px earshot (${distance}px)! WebRTC audio active (${gain}% gain).`, 'success');
+      }
 
       if (webrtcManagerRef.current) {
-        webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, maxRadius);
+        const myX = avatarPos.current ? avatarPos.current.x : coords.x;
+        const peerX = peer.location ? peer.location[0] : (peer.x || 0);
+        const deltaX = peerX - myX;
+        webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, maxRadius, deltaX, isCulled, 115);
 
         // Initialize RTCPeerConnection for both caller & callee to ensure readiness for ICE & tracks
         webrtcManagerRef.current.createPeerConnection(peer.socketId, {
@@ -380,9 +403,13 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     });
 
     // Proximity continuous dynamic distance & audio gain update
-    socket.on('proximity-distance-update', ({ peerSocketId, distance, gain }) => {
+    socket.on('proximity-distance-update', ({ peerSocketId, distance, gain, isCulled }) => {
       if (webrtcManagerRef.current) {
-        webrtcManagerRef.current.setPeerDistance(peerSocketId, distance, 100);
+        const peerAvatar = peersRef.current.get(peerSocketId);
+        const myX = avatarPos.current ? avatarPos.current.x : coords.x;
+        const peerX = peerAvatar ? (peerAvatar.x || peerAvatar.location?.[0] || 0) : 0;
+        const deltaX = peerX - myX;
+        webrtcManagerRef.current.setPeerDistance(peerSocketId, distance, 100, deltaX, isCulled, 115);
       }
     });
 
@@ -1717,6 +1744,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         peerConnectionStates={peerConnectionStates}
         onMoveToDistance={handleMoveToDistance}
         showToast={showToast}
+        clusterInfo={clusterInfo}
       />
     </div>
   );
