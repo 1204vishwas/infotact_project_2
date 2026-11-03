@@ -1,5 +1,6 @@
 const User = require('../models/User');
 const { RedisMeshAdapterService } = require('../services/redisAdapter');
+const { calculateAttenuation, ATTENUATION_MODELS } = require('../services/attenuationService');
 
 // ====================================================
 // WEBRTC MESH & PROXIMITY SCALING PARAMETERS
@@ -21,10 +22,10 @@ function calculateDistance(locA, locB) {
   return Math.sqrt(dx * dx + dy * dy);
 }
 
-// Dynamic distance attenuation formula (10% to 100%)
+// Dynamic distance attenuation formula using backend attenuation service
 function calculateGain(distance, maxRadius = WEBRTC_PROXIMITY_RADIUS) {
-  if (distance > maxRadius) return 0;
-  return Math.max(10, Math.min(100, Math.round((1 - distance / maxRadius) * 100)));
+  const result = calculateAttenuation(distance, { maxRadius, hysteresisRadius: WEBRTC_DISCONNECT_RADIUS });
+  return result.gainPercent;
 }
 
 module.exports = function initSignalingServer(io, options = {}) {

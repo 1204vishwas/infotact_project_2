@@ -975,19 +975,24 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         const dy = peer.y - pos.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
-        // Update WebRTC volume attenuation based on distance
-        if (webrtcManagerRef.current && !peer.isBot) {
-          webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, earshotRadius);
+        // Update WebRTC volume attenuation based on distance using configured Web Audio API algorithm
+        let attenuation = null;
+        if (webrtcManagerRef.current) {
+          if (!peer.isBot) {
+            attenuation = webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, earshotRadius, dx, false, 115);
+          } else {
+            attenuation = webrtcManagerRef.current.calculateAttenuation(distance, { maxRadius: earshotRadius, deltaX: dx });
+          }
         }
 
         // Adjust bot synthesizer gain dynamically based on distance
         if (peer.isBot && botOscillatorRef.current) {
-          const botGain = distance <= earshotRadius ? Math.max(0.01, (1 - distance / earshotRadius) * 0.08) : 0;
+          const botGain = attenuation && distance <= earshotRadius ? attenuation.gain * 0.08 : 0;
           botOscillatorRef.current.gain.gain.setValueAtTime(botGain, webrtcManagerRef.current?.getAudioContext()?.currentTime || 0);
         }
 
         if (distance <= earshotRadius) {
-          const gain = Math.round((1 - distance / earshotRadius) * 100);
+          const gain = attenuation ? attenuation.gainPercent : Math.max(10, Math.min(100, Math.round((1 - distance / earshotRadius) * 100)));
           const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive ? 0.35 : 0);
 
           activePeersInRadius.push({
@@ -996,6 +1001,9 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             role: peer.role,
             distance: Math.round(distance),
             gain: Math.max(10, Math.min(100, gain)),
+            decibels: attenuation?.decibels,
+            filterFreq: attenuation?.filterFreq,
+            pan: attenuation?.pan,
             audioLevel: peerAudioLvl,
             isSpeaking: peerAudioLvl > 0.05 && !peer.micMuted,
             connectionState: peerConnectionStates[peer.socketId] || (peer.isBot ? 'connected' : 'connecting')
@@ -1045,9 +1053,9 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           ctx.stroke();
 
           // Sleek floating WebRTC Audio badge at midpoint
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+          ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
           ctx.beginPath();
-          ctx.roundRect(midX - 45, midY - 10, 90, 20, 6);
+          ctx.roundRect(midX - 52, midY - 11, 104, 22, 6);
           ctx.fill();
           ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
           ctx.lineWidth = 1;
@@ -1056,7 +1064,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           ctx.fillStyle = '#38bdf8';
           ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
           ctx.textAlign = 'center';
-          ctx.fillText(`GAIN ${gain}% GAIN ${Math.round(distance)}px`, midX, midY + 3.5);
+          ctx.fillText(`GAIN: ${gain}% (${Math.round(distance)}px)`, midX, midY + 4);
         }
       });
 
