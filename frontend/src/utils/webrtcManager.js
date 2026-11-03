@@ -7,6 +7,14 @@
  * and Web Audio API for spatial distance attenuation and Canvas API visualization.
  */
 
+import {
+  calculateAttenuation,
+  ATTENUATION_MODELS,
+  ATTENUATION_MODEL_METADATA,
+  DEFAULT_ATTENUATION_CONFIG,
+  generateAttenuationCurve
+} from './audioAttenuation';
+
 const RTC_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -117,8 +125,79 @@ export class WebRTCAudioManager {
     this.culledPeers = new Set(); // In-range peers on standby due to density limit
     this.hysteresisRadius = 115; // Proximity release threshold buffer
 
+    // Dynamic Attenuation & Spatial Web Audio API Configuration
+    this.attenuationConfig = { ...DEFAULT_ATTENUATION_CONFIG };
+
     // Loopback test session
     this.loopbackSession = null;
+  }
+
+  /**
+   * Set active distance attenuation model ('exponential' | 'smoothstep' | 'inverse' | 'linear' | 'logarithmic')
+   */
+  setAttenuationModel(model) {
+    if (Object.values(ATTENUATION_MODELS).includes(model)) {
+      this.attenuationConfig.model = model;
+      this.recalculateAllPeerAttenuation();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Update attenuation parameters (e.g. minRadius, maxRadius, minGain, rolloff, etc.)
+   */
+  updateAttenuationConfig(updates = {}) {
+    this.attenuationConfig = { ...this.attenuationConfig, ...updates };
+    this.recalculateAllPeerAttenuation();
+    return this.getAttenuationConfig();
+  }
+
+  /**
+   * Retrieve current attenuation configuration
+   */
+  getAttenuationConfig() {
+    return { ...this.attenuationConfig };
+  }
+
+  /**
+   * Retrieve metadata for all available attenuation models
+   */
+  getAvailableAttenuationModels() {
+    return ATTENUATION_MODEL_METADATA;
+  }
+
+  /**
+   * Calculate attenuation metrics for a specific distance without mutating state
+   */
+  calculateAttenuation(distance, options = {}) {
+    return calculateAttenuation(distance, { ...this.attenuationConfig, ...options });
+  }
+
+  /**
+   * Generate attenuation curve data points for real-time visualization
+   */
+  generateAttenuationCurve(model = null, options = {}, steps = 120) {
+    const activeModel = model || this.attenuationConfig.model;
+    return generateAttenuationCurve(activeModel, { ...this.attenuationConfig, ...options }, steps);
+  }
+
+  /**
+   * Re-evaluate volume drop-off and spatial panning for all connected peers
+   */
+  recalculateAllPeerAttenuation() {
+    this.peers.forEach((peerData, peerSocketId) => {
+      if (peerData.distance !== undefined) {
+        this.setPeerDistance(
+          peerSocketId,
+          peerData.distance,
+          this.attenuationConfig.maxRadius,
+          peerData.deltaX !== undefined ? peerData.deltaX : null,
+          peerData.isCulled || false,
+          this.attenuationConfig.hysteresisRadius
+        );
+      }
+    });
   }
 
   /**
@@ -412,11 +491,22 @@ export class WebRTCAudioManager {
       pc,
       stream: null,
       audioElement: null,
+      sourceNode: null,
+      filterNode: null,
+      pannerNode: null,
       gainNode: null,
       analyser: null,
       connectionState: 'new',
       distance: 50,
       gain: 1.0,
+      gainPercent: 100,
+      decibels: 0,
+      filterFreq: 20000,
+      pan: 0,
+      isAudible: true,
+      inHysteresis: false,
+      isCulled: false,
+      model: this.attenuationConfig.model,
       stats: { bytesReceived: 0, packetsReceived: 0, bytesSent: 0, packetsSent: 0, audioLevel: 0, jitter: 0 }
     });
 
@@ -424,7 +514,10 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Setup remote audio stream playback, Web Audio gain attenuation, and frequency analyser
+   * Hook WebRTC remote audio stream into the Web Audio API graph
+   * Architecture:
+   * MediaStreamSource -> BiquadFilter (Air Absorption) -> StereoPanner (2D Binaural) -> GainNode (Distance Drop-Off) -> AnalyserNode -> AudioContext.destination
+   * Plus HTML5 audio element (muted = true) for reliable Chromium RTP track consumption.
    */
   setupRemoteAudioStream(peerSocketId, remoteStream) {
     const peerData = this.peers.get(peerSocketId);
@@ -432,44 +525,103 @@ export class WebRTCAudioManager {
 
     peerData.stream = remoteStream;
 
-    // 1. Dedicated HTML5 Audio element for reliable browser audio playback
-    const audioElement = new Audio();
+    // 1. Maintain an HTML5 Audio element with muted = true
+    // In Chromium browsers, an audio element sink ensures the WebRTC MediaStreamTrack
+    // is decoded without throttling. Setting muted = true prevents duplicate audio leakage
+    // while the Web Audio API graph handles all audible playback and spatial rendering.
+    let audioElement = peerData.audioElement;
+    if (!audioElement) {
+      audioElement = new Audio();
+      audioElement.autoplay = true;
+      audioElement.playsInline = true;
+      audioElement.muted = true;
+    }
     audioElement.srcObject = remoteStream;
-    audioElement.autoplay = true;
-    audioElement.playsInline = true;
-    audioElement.volume = peerData.gain !== undefined ? peerData.gain : 0.8;
-
-    // Handle browser autoplay policy
     audioElement.play().catch((err) => {
-      console.log(`[WebRTC Audio] Remote audio autoplay pending user gesture:`, err);
+      console.log('[WebRTC Audio] Remote audio element playback pending user gesture:', err);
     });
-
     peerData.audioElement = audioElement;
 
-    // 2. Setup Web Audio API node graph with Stereo Panning, Gain Attenuation & Canvas Visualizer
+    // 2. Build full Web Audio API node graph
     try {
       const audioCtx = this.getAudioContext();
       if (audioCtx) {
-        const source = audioCtx.createMediaStreamSource(remoteStream);
+        // Disconnect existing nodes if stream is being re-hooked
+        if (peerData.sourceNode) {
+          try { peerData.sourceNode.disconnect(); } catch (e) {}
+        }
+        if (peerData.filterNode) {
+          try { peerData.filterNode.disconnect(); } catch (e) {}
+        }
+        if (peerData.pannerNode) {
+          try { peerData.pannerNode.disconnect(); } catch (e) {}
+        }
+        if (peerData.gainNode) {
+          try { peerData.gainNode.disconnect(); } catch (e) {}
+        }
+        if (peerData.analyser) {
+          try { peerData.analyser.disconnect(); } catch (e) {}
+        }
+
+        const sourceNode = audioCtx.createMediaStreamSource(remoteStream);
+
+        // Acoustic low-pass air absorption filter (distant audio loses high frequencies)
+        const filterNode = audioCtx.createBiquadFilter();
+        filterNode.type = 'lowpass';
+        const initialFilterFreq = peerData.filterFreq || this.attenuationConfig.filterCeilingHz || 20000;
+        filterNode.frequency.setValueAtTime(initialFilterFreq, audioCtx.currentTime);
+        filterNode.Q.setValueAtTime(0.707, audioCtx.currentTime);
+
+        // Stereo panner for 2D spatial positioning
+        let pannerNode = null;
+        if (typeof audioCtx.createStereoPanner === 'function') {
+          pannerNode = audioCtx.createStereoPanner();
+          const initialPan = peerData.pan !== undefined ? peerData.pan : 0;
+          pannerNode.pan.setValueAtTime(initialPan, audioCtx.currentTime);
+        }
+
+        // Gain node for distance volume attenuation with sub-millisecond click-free ramping
         const gainNode = audioCtx.createGain();
+        const initialGain = peerData.gain !== undefined ? peerData.gain : 0.8;
+        gainNode.gain.setValueAtTime(initialGain, audioCtx.currentTime);
+
+        // Analyser node for FFT spectrum and oscilloscope visualization
         const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 64;
         analyser.smoothingTimeConstant = 0.6;
 
-        let pannerNode = null;
-        if (typeof audioCtx.createStereoPanner === 'function') {
-          pannerNode = audioCtx.createStereoPanner();
-          source.connect(pannerNode);
+        // Connect the Web Audio chain
+        sourceNode.connect(filterNode);
+        if (pannerNode) {
+          filterNode.connect(pannerNode);
           pannerNode.connect(gainNode);
         } else {
-          source.connect(gainNode);
+          filterNode.connect(gainNode);
         }
-
         gainNode.connect(analyser);
 
-        peerData.gainNode = gainNode;
+        // Output directly to browser audio destination (speakers/headphones)
+        analyser.connect(audioCtx.destination);
+
+        peerData.sourceNode = sourceNode;
+        peerData.filterNode = filterNode;
         peerData.pannerNode = pannerNode;
+        peerData.gainNode = gainNode;
         peerData.analyser = analyser;
+
+        console.log(`[WebRTC Audio] Successfully hooked WebRTC track for peer '${peerSocketId}' into Web Audio API.`);
+
+        // Re-apply current distance attenuation parameters
+        if (peerData.distance !== undefined) {
+          this.setPeerDistance(
+            peerSocketId,
+            peerData.distance,
+            this.attenuationConfig.maxRadius,
+            peerData.deltaX !== undefined ? peerData.deltaX : null,
+            peerData.isCulled || false,
+            this.attenuationConfig.hysteresisRadius
+          );
+        }
       }
     } catch (err) {
       console.warn('[WebRTC Audio] Web Audio graph setup error for peer:', err);
@@ -608,8 +760,10 @@ export class WebRTCAudioManager {
   /**
    * Dynamically adjust remote peer audio volume based on Euclidean distance on canvas
    * Supports:
-   * - Smooth exponential gain attenuation (10% to 100%)
-   * - Hysteresis release zone (100px - 115px soft fade)
+   * - Configurable attenuation models: Exponential (Psychoacoustic), Smoothstep S-Curve, Inverse Distance, Linear, and Logarithmic dB
+   * - Acoustic high-frequency air absorption filter (low-pass cutoff frequency in Hz)
+   * - Click-free exponential parameter ramping via Web Audio API setTargetAtTime
+   * - Hysteresis release cushion zone (100px - 115px soft cosine fade)
    * - Binaural 2D spatial stereo panning via Web Audio StereoPannerNode
    * - Density culling state (muting culled peers to prevent CPU/audio saturation)
    */
@@ -619,47 +773,57 @@ export class WebRTCAudioManager {
 
     peerData.distance = distance;
     peerData.isCulled = !!isCulled;
+    peerData.deltaX = deltaX;
 
-    let gain = 0;
-    if (isCulled) {
-      // Culled peer: connection kept alive on standby, audio muted
-      gain = 0;
-    } else if (distance <= maxRadius) {
-      // Smooth linear attenuation: 1.0 (at 0px) down to 0.1 (at 100px)
-      gain = Math.max(0.1, 1 - (distance / maxRadius) * 0.9);
-    } else if (distance <= hysteresisRadius) {
-      // Soft fade in hysteresis buffer zone (100px to 115px)
-      const fadeProgress = (distance - maxRadius) / (hysteresisRadius - maxRadius);
-      gain = Math.max(0, 0.1 * (1 - fadeProgress));
-    } else {
-      gain = 0;
-    }
+    // Calculate dynamic attenuation using the configured mathematical model
+    const attenuation = calculateAttenuation(distance, {
+      ...this.attenuationConfig,
+      maxRadius,
+      hysteresisRadius,
+      deltaX,
+      isCulled
+    });
 
-    peerData.gain = gain;
+    peerData.gain = attenuation.gain;
+    peerData.gainPercent = attenuation.gainPercent;
+    peerData.decibels = attenuation.decibels;
+    peerData.filterFreq = attenuation.filterFreq;
+    peerData.pan = attenuation.pan;
+    peerData.isAudible = attenuation.isAudible;
+    peerData.inHysteresis = attenuation.inHysteresis;
+    peerData.model = attenuation.model;
 
-    // Apply to HTML5 audio element
-    if (peerData.audioElement) {
-      peerData.audioElement.volume = gain;
-    }
-
-    // Apply smooth click-free gain change to Web Audio GainNode
     const audioCtx = this.getAudioContext();
-    if (peerData.gainNode && audioCtx) {
-      try {
-        peerData.gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
-        peerData.gainNode.gain.setTargetAtTime(gain, audioCtx.currentTime, 0.04);
-      } catch (e) {}
+    if (audioCtx) {
+      const now = audioCtx.currentTime;
+      const timeConstant = 0.035; // 35ms exponential smoothing prevents audio clicks/zipper noise
+
+      // 1. Smoothly update volume drop-off gain in Web Audio API
+      if (peerData.gainNode) {
+        try {
+          peerData.gainNode.gain.cancelScheduledValues(now);
+          peerData.gainNode.gain.setTargetAtTime(attenuation.gain, now, timeConstant);
+        } catch (e) {}
+      }
+
+      // 2. Smoothly update acoustic low-pass air absorption filter
+      if (peerData.filterNode) {
+        try {
+          peerData.filterNode.frequency.cancelScheduledValues(now);
+          peerData.filterNode.frequency.setTargetAtTime(attenuation.filterFreq, now, timeConstant);
+        } catch (e) {}
+      }
+
+      // 3. Smoothly update binaural stereo pan
+      if (peerData.pannerNode && attenuation.pan !== null) {
+        try {
+          peerData.pannerNode.pan.cancelScheduledValues(now);
+          peerData.pannerNode.pan.setTargetAtTime(attenuation.pan, now, timeConstant);
+        } catch (e) {}
+      }
     }
 
-    // Apply 2D spatial stereo panning
-    if (peerData.pannerNode && audioCtx && deltaX !== null) {
-      try {
-        const pan = Math.max(-1, Math.min(1, deltaX / maxRadius));
-        peerData.pannerNode.pan.cancelScheduledValues(audioCtx.currentTime);
-        peerData.pannerNode.pan.setTargetAtTime(pan, audioCtx.currentTime, 0.04);
-        peerData.pan = pan;
-      } catch (e) {}
-    }
+    return attenuation;
   }
 
   /**
@@ -751,7 +915,15 @@ export class WebRTCAudioManager {
         iceConnectionState: peerData.pc.iceConnectionState,
         signalingState: peerData.pc.signalingState,
         distance: Math.round(peerData.distance || 0),
-        gainPercent: Math.round((peerData.gain || 0) * 100),
+        gainPercent: peerData.gainPercent !== undefined ? peerData.gainPercent : Math.round((peerData.gain || 0) * 100),
+        gain: peerData.gain !== undefined ? peerData.gain : 0,
+        decibels: peerData.decibels !== undefined ? peerData.decibels : -60,
+        filterFreq: peerData.filterFreq || 20000,
+        pan: peerData.pan !== undefined ? peerData.pan : 0,
+        model: peerData.model || this.attenuationConfig.model,
+        isAudible: peerData.isAudible !== undefined ? peerData.isAudible : (peerData.gain > 0),
+        inHysteresis: !!peerData.inHysteresis,
+        isCulled: !!peerData.isCulled,
         bytesReceived,
         packetsReceived,
         bytesSent,
@@ -767,13 +939,30 @@ export class WebRTCAudioManager {
   }
 
   /**
-   * Close a specific peer connection and tear down audio elements
+   * Close a specific peer connection and cleanly tear down Web Audio API nodes
    */
   closePeerConnection(peerSocketId) {
     const peerData = this.peers.get(peerSocketId);
     if (!peerData) return;
 
-    console.log(`[WebRTC P2P] Tearing down peer connection for: ${peerSocketId}`);
+    console.log(`[WebRTC P2P] Tearing down peer connection & Web Audio graph for: ${peerSocketId}`);
+
+    // Disconnect Web Audio API node graph
+    if (peerData.sourceNode) {
+      try { peerData.sourceNode.disconnect(); } catch (e) {}
+    }
+    if (peerData.filterNode) {
+      try { peerData.filterNode.disconnect(); } catch (e) {}
+    }
+    if (peerData.pannerNode) {
+      try { peerData.pannerNode.disconnect(); } catch (e) {}
+    }
+    if (peerData.gainNode) {
+      try { peerData.gainNode.disconnect(); } catch (e) {}
+    }
+    if (peerData.analyser) {
+      try { peerData.analyser.disconnect(); } catch (e) {}
+    }
 
     if (peerData.audioElement) {
       peerData.audioElement.pause();

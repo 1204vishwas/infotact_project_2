@@ -8,7 +8,8 @@
     "dev": "node --watch server.js",
     "audit": "node scripts/audit-benchmark.js",
     "audio-check": "node scripts/audio-check-demo.js",
-    "cluster-check": "node scripts/multi-node-cluster-demo.js"
+    "cluster-check": "node scripts/multi-node-cluster-demo.js",
+    "attenuation-test": "node scripts/attenuation-benchmark.js"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",

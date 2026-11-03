@@ -25,6 +25,13 @@ import {
   Copy,
   Check
 } from 'lucide-react';
+import {
+  ATTENUATION_MODELS,
+  ATTENUATION_MODEL_METADATA,
+  DEFAULT_ATTENUATION_CONFIG,
+  calculateAttenuation,
+  generateAttenuationCurve
+} from '../utils/audioAttenuation';
 
 export default function AudioCheckModal({
   isOpen,
@@ -43,9 +50,13 @@ export default function AudioCheckModal({
   const [isTestToneActive, setIsTestToneActive] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [handshakeLog, setHandshakeLog] = useState([]);
+  const [selectedModel, setSelectedModel] = useState(
+    webrtcManager?.getAttenuationConfig()?.model || ATTENUATION_MODELS.EXPONENTIAL
+  );
 
   const localCanvasRef = useRef(null);
   const remoteCanvasRef = useRef(null);
+  const curveCanvasRef = useRef(null);
   const animationFrameRef = useRef(null);
 
   // Peer list array
@@ -200,6 +211,192 @@ export default function AudioCheckModal({
     };
   }, [isOpen, webrtcManager, selectedPeerId]);
 
+  // Render Dynamic Attenuation Curve Canvas
+  useEffect(() => {
+    if (!isOpen || !curveCanvasRef.current) return;
+    const canvas = curveCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    const width = canvas.width;
+    const height = canvas.height;
+
+    ctx.clearRect(0, 0, width, height);
+
+    // Deep modern dark background
+    ctx.fillStyle = '#080d1a';
+    ctx.fillRect(0, 0, width, height);
+
+    const paddingLeft = 38;
+    const paddingRight = 20;
+    const paddingTop = 16;
+    const paddingBottom = 24;
+    const plotWidth = width - paddingLeft - paddingRight;
+    const plotHeight = height - paddingTop - paddingBottom;
+
+    const maxDist = 120; // 0 to 120px display range
+    const earshotDist = 100;
+    const hysteresisDist = 115;
+
+    // 1. Zone shading
+    const x100 = paddingLeft + (earshotDist / maxDist) * plotWidth;
+    const x115 = paddingLeft + (hysteresisDist / maxDist) * plotWidth;
+
+    // Earshot Active Zone (0 - 100px)
+    ctx.fillStyle = 'rgba(16, 185, 129, 0.08)';
+    ctx.fillRect(paddingLeft, paddingTop, x100 - paddingLeft, plotHeight);
+
+    // Hysteresis Soft Cushion Zone (100 - 115px)
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.09)';
+    ctx.fillRect(x100, paddingTop, x115 - x100, plotHeight);
+
+    // Disconnect Zone (> 115px)
+    ctx.fillStyle = 'rgba(239, 68, 68, 0.05)';
+    ctx.fillRect(x115, paddingTop, paddingLeft + plotWidth - x115, plotHeight);
+
+    // Zone labels at top
+    ctx.font = 'bold 8px "Plus Jakarta Sans", monospace';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#10b981';
+    ctx.fillText('100px EARSHOT ZONE', (paddingLeft + x100) / 2, paddingTop - 4);
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillText('HYSTERESIS', (x100 + x115) / 2, paddingTop - 4);
+
+    // 2. Grid lines & scale labels
+    ctx.strokeStyle = '#1e293b';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([2, 4]);
+
+    const gainLevels = [1.0, 0.75, 0.5, 0.25, 0.0];
+    ctx.fillStyle = '#64748b';
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+
+    gainLevels.forEach((gl) => {
+      const y = paddingTop + (1.0 - gl) * plotHeight;
+      ctx.beginPath();
+      ctx.moveTo(paddingLeft, y);
+      ctx.lineTo(paddingLeft + plotWidth, y);
+      ctx.stroke();
+      ctx.fillText(`${Math.round(gl * 100)}%`, paddingLeft - 6, y + 3);
+    });
+
+    // Vertical boundary line for 100px earshot
+    ctx.strokeStyle = '#10b981';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(x100, paddingTop);
+    ctx.lineTo(x100, paddingTop + plotHeight);
+    ctx.stroke();
+
+    // Vertical boundary line for 115px hysteresis
+    ctx.strokeStyle = '#f59e0b';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x115, paddingTop);
+    ctx.lineTo(x115, paddingTop + plotHeight);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // X-axis Distance labels
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#94a3b8';
+    [0, 20, 40, 60, 80, 100, 115].forEach((d) => {
+      const x = paddingLeft + (d / maxDist) * plotWidth;
+      ctx.fillText(`${d}px`, x, height - 8);
+    });
+
+    // 3. Plot Mathematical Attenuation Curve
+    const points = generateAttenuationCurve(selectedModel, { maxRadius: 100, hysteresisRadius: 115 }, 120);
+
+    ctx.beginPath();
+    points.forEach((pt, i) => {
+      const px = paddingLeft + (pt.distance / maxDist) * plotWidth;
+      const py = paddingTop + (1.0 - pt.gain) * plotHeight;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    });
+
+    // Curve stroke with glow
+    ctx.strokeStyle = '#38bdf8';
+    ctx.lineWidth = 2.5;
+    ctx.shadowColor = 'rgba(56, 189, 248, 0.6)';
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Fill under curve
+    ctx.lineTo(paddingLeft + plotWidth, paddingTop + plotHeight);
+    ctx.lineTo(paddingLeft, paddingTop + plotHeight);
+    ctx.closePath();
+    const fillGrad = ctx.createLinearGradient(0, paddingTop, 0, paddingTop + plotHeight);
+    fillGrad.addColorStop(0, 'rgba(56, 189, 248, 0.3)');
+    fillGrad.addColorStop(0.7, 'rgba(99, 102, 241, 0.15)');
+    fillGrad.addColorStop(1, 'rgba(56, 189, 248, 0.01)');
+    ctx.fillStyle = fillGrad;
+    ctx.fill();
+
+    // 4. Live Avatar Distance Cursor & Indicator Dot
+    if (currentDistance >= 0 && currentDistance <= maxDist) {
+      const curX = paddingLeft + (currentDistance / maxDist) * plotWidth;
+      const curAtten = calculateAttenuation(currentDistance, { model: selectedModel, maxRadius: 100, hysteresisRadius: 115 });
+      const curY = paddingTop + (1.0 - curAtten.gain) * plotHeight;
+
+      // Vertical line through current position
+      const cursorColor = currentDistance <= 100 ? '#10b981' : currentDistance <= 115 ? '#f59e0b' : '#ef4444';
+      ctx.strokeStyle = cursorColor;
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([2, 2]);
+      ctx.beginPath();
+      ctx.moveTo(curX, paddingTop);
+      ctx.lineTo(curX, paddingTop + plotHeight);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Outer glow circle
+      ctx.beginPath();
+      ctx.arc(curX, curY, 8, 0, Math.PI * 2);
+      ctx.fillStyle = `${cursorColor}33`;
+      ctx.fill();
+
+      // Inner point
+      ctx.beginPath();
+      ctx.arc(curX, curY, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      ctx.strokeStyle = cursorColor;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Tooltip pill above dot
+      const tagText = `${currentDistance}px • ${curAtten.gainPercent}% (${curAtten.decibels}dB)`;
+      ctx.font = 'bold 9px monospace';
+      const tagW = ctx.measureText(tagText).width + 12;
+      const tagX = Math.min(width - tagW - 4, Math.max(paddingLeft, curX - tagW / 2));
+      const tagY = Math.max(paddingTop + 14, curY - 10);
+
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.beginPath();
+      ctx.roundRect(tagX, tagY - 11, tagW, 16, 4);
+      ctx.fill();
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.textAlign = 'left';
+      ctx.fillText(tagText, tagX + 6, tagY);
+    }
+  }, [isOpen, selectedModel, currentDistance]);
+
+  const handleSelectModel = (modelKey) => {
+    setSelectedModel(modelKey);
+    if (webrtcManager) {
+      webrtcManager.setAttenuationModel(modelKey);
+    }
+    showToast(`Switched attenuation algorithm to ${ATTENUATION_MODEL_METADATA[modelKey]?.shortName || modelKey}`, 'success');
+  };
+
   if (!isOpen) return null;
 
   const handleToggleTestTone = () => {
@@ -275,7 +472,7 @@ export default function AudioCheckModal({
             className="p-2 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition-colors"
           >
             <span className="sr-only">Close</span>
-            ✕
+            Γ£ò
           </button>
         </div>
 
@@ -530,6 +727,150 @@ export default function AudioCheckModal({
                     <span>WebRTC Track: {activePeer ? 'ATTACHED' : 'WAITING'}</span>
                     <span>Gain: {isWithin100px ? `${Math.round(Math.max(10, (1 - currentDistance / 100) * 100))}%` : '0% (Muted)'}</span>
                   </div>
+                </div>
+              </div>
+
+              {/* Dynamic Attenuation & Web Audio API Engine Card */}
+              <div className="p-4 rounded-xl bg-slate-900/90 border border-cyan-500/30 shadow-lg shadow-cyan-500/5 space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800 pb-3">
+                  <div>
+                    <span className="text-xs font-bold text-white uppercase tracking-wider flex items-center gap-1.5">
+                      <Sliders className="w-4 h-4 text-cyan-400" /> Dynamic Attenuation &amp; Web Audio API Engine
+                    </span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">
+                      Real-time mathematical volume drop-off based on pixel distance with high-frequency air absorption
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5 self-start sm:self-auto">
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-300 font-mono border border-cyan-500/30">
+                      Model: {ATTENUATION_MODEL_METADATA[selectedModel]?.shortName}
+                    </span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 font-mono border border-emerald-500/30">
+                      AudioContext: ACTIVE
+                    </span>
+                  </div>
+                </div>
+
+                {/* Algorithm Switcher Pills */}
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <span className="text-[11px] font-semibold text-slate-300">Select Attenuation Drop-Off Algorithm:</span>
+                    <span className="text-[10px] text-slate-400 font-mono">
+                      {ATTENUATION_MODEL_METADATA[selectedModel]?.formula}
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5">
+                    {Object.entries(ATTENUATION_MODEL_METADATA).map(([key, meta]) => {
+                      const isSelected = selectedModel === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => handleSelectModel(key)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-medium transition-all text-left flex flex-col border ${
+                            isSelected
+                              ? 'bg-gradient-to-r from-cyan-500/20 to-indigo-500/20 border-cyan-400 text-white shadow-sm'
+                              : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700'
+                          }`}
+                        >
+                          <span className="font-bold flex items-center justify-between">
+                            {meta.shortName}
+                            {meta.recommended && (
+                              <span className="text-[8px] bg-cyan-500/20 text-cyan-300 px-1 py-0.2 rounded">REC</span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1 italic">
+                    {ATTENUATION_MODEL_METADATA[selectedModel]?.description}
+                  </p>
+                </div>
+
+                {/* Attenuation Curve Canvas */}
+                <div>
+                  {(() => {
+                    const activeAttenuation = calculateAttenuation(currentDistance, {
+                      model: selectedModel,
+                      maxRadius: 100,
+                      hysteresisRadius: 115,
+                      deltaX: activePeer && selfAvatar ? (activePeer.x || activePeer.targetX || 0) - (selfAvatar.x || 0) : null
+                    });
+
+                    return (
+                      <>
+                        <div className="flex items-center justify-between text-[11px] text-slate-400 mb-1">
+                          <span>Acoustic Attenuation Curve G(d) vs Distance (px)</span>
+                          <span className="text-cyan-400 font-mono">
+                            Current: {currentDistance}px &rarr; Gain: {activeAttenuation.gainPercent}% ({activeAttenuation.decibels} dB)
+                          </span>
+                        </div>
+                        <canvas
+                          ref={curveCanvasRef}
+                          width={560}
+                          height={150}
+                          className="w-full h-36 rounded-lg bg-slate-950 border border-slate-800"
+                        />
+
+                        {/* Web Audio API Node Graph Signal Flow */}
+                        <div className="p-2.5 rounded-lg bg-slate-950/70 border border-slate-800 space-y-1.5 mt-3">
+                          <div className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                            <span>Web Audio API Audio Graph Flow</span>
+                            <span className="text-emerald-400 font-mono">Zero Zipper Noise (35ms setTargetAtTime)</span>
+                          </div>
+                          <div className="flex flex-wrap items-center justify-between gap-1 text-[10px] font-mono">
+                            <span className="px-2 py-1 rounded bg-slate-800/90 text-cyan-300 border border-slate-700">
+                              1. MediaStreamSource
+                            </span>
+                            <span className="text-slate-600">&rarr;</span>
+                            <span className="px-2 py-1 rounded bg-slate-800/90 text-indigo-300 border border-slate-700">
+                              2. BiquadFilter ({activeAttenuation.filterFreq} Hz)
+                            </span>
+                            <span className="text-slate-600">&rarr;</span>
+                            <span className="px-2 py-1 rounded bg-slate-800/90 text-purple-300 border border-slate-700">
+                              3. StereoPanner ({activeAttenuation.pan > 0 ? `+${activeAttenuation.pan} R` : activeAttenuation.pan < 0 ? `${activeAttenuation.pan} L` : 'Center'})
+                            </span>
+                            <span className="text-slate-600">&rarr;</span>
+                            <span className="px-2 py-1 rounded bg-slate-800/90 text-emerald-300 border border-slate-700">
+                              4. GainNode ({activeAttenuation.gain})
+                            </span>
+                            <span className="text-slate-600">&rarr;</span>
+                            <span className="px-2 py-1 rounded bg-slate-800/90 text-amber-300 border border-slate-700">
+                              5. Destination (Speakers)
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Real-time Dynamic Acoustic Telemetry Grid */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center text-xs mt-3">
+                          <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+                            <p className="text-[10px] text-slate-400 uppercase font-semibold">Volume Gain</p>
+                            <p className="text-base font-bold text-emerald-400">{activeAttenuation.gainPercent}%</p>
+                            <p className="text-[10px] text-slate-500">Amplitude: {activeAttenuation.gain}</p>
+                          </div>
+                          <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+                            <p className="text-[10px] text-slate-400 uppercase font-semibold">Perceived Loudness</p>
+                            <p className="text-base font-bold text-cyan-300">
+                              {activeAttenuation.decibels === -Infinity ? '-∞' : `${activeAttenuation.decibels} dB`}
+                            </p>
+                            <p className="text-[10px] text-slate-500">Decibel Scale</p>
+                          </div>
+                          <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+                            <p className="text-[10px] text-slate-400 uppercase font-semibold">Air Absorption (LPF)</p>
+                            <p className="text-base font-bold text-indigo-300">{activeAttenuation.filterFreq.toLocaleString()} Hz</p>
+                            <p className="text-[10px] text-slate-500">Distance Treble Roll-Off</p>
+                          </div>
+                          <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
+                            <p className="text-[10px] text-slate-400 uppercase font-semibold">2D Stereo Balance</p>
+                            <p className="text-base font-bold text-purple-300">
+                              {activeAttenuation.pan > 0.05 ? `Right (+${Math.round(activeAttenuation.pan * 100)}%)` : activeAttenuation.pan < -0.05 ? `Left (${Math.round(activeAttenuation.pan * 100)}%)` : 'Center (0%)'}
+                            </p>
+                            <p className="text-[10px] text-slate-500">Binaural Panning</p>
+                          </div>
+                        </div>
+                      </>
+                    );
+                  })()}
                 </div>
               </div>
 

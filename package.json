@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "node scripts/dev-runner.js",
     "start": "node scripts/dev-runner.js",
-    "verify": "npm run audit && npm run audio-check && npm run cluster-check",
+    "verify": "npm run audit && npm run audio-check && npm run cluster-check && npm run attenuation-test",
     "backend": "npm --prefix backend start",
     "frontend": "npm --prefix frontend dev",
     "server": "npm --prefix backend start",
@@ -13,7 +13,8 @@
     "install:all": "npm --prefix backend install && npm --prefix frontend install",
     "audit": "npm --prefix backend run audit",
     "audio-check": "npm --prefix backend run audio-check",
-    "cluster-check": "npm --prefix backend run cluster-check"
+    "cluster-check": "npm --prefix backend run cluster-check",
+    "attenuation-test": "npm --prefix backend run attenuation-test"
   },
   "keywords": [
     "proxispeak",
