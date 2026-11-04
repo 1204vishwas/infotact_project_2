@@ -767,21 +767,24 @@ export class WebRTCAudioManager {
    * - Binaural 2D spatial stereo panning via Web Audio StereoPannerNode
    * - Density culling state (muting culled peers to prevent CPU/audio saturation)
    */
-  setPeerDistance(peerSocketId, distance, maxRadius = 100, deltaX = null, isCulled = false, hysteresisRadius = 115) {
+  setPeerDistance(peerSocketId, distance, maxRadius = 100, deltaX = null, isCulled = false, hysteresisRadius = 115, isSoundBlocked = false) {
     const peerData = this.peers.get(peerSocketId);
-    if (!peerData) return;
+    if (!peerData) return null;
 
     peerData.distance = distance;
     peerData.isCulled = !!isCulled;
     peerData.deltaX = deltaX;
+    peerData.isSoundBlocked = !!isSoundBlocked;
 
     // Calculate dynamic attenuation using the configured mathematical model
+    // If sound is blocked by an acoustic obstacle, gain is muted (0.0)
+    const effectiveCulled = isCulled || isSoundBlocked;
     const attenuation = calculateAttenuation(distance, {
       ...this.attenuationConfig,
       maxRadius,
       hysteresisRadius,
       deltaX,
-      isCulled
+      isCulled: effectiveCulled
     });
 
     peerData.gain = attenuation.gain;

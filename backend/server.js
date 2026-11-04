@@ -7,6 +7,8 @@ require('dotenv').config();
 
 const authRoutes = require('./routes/auth');
 const spatialRoutes = require('./routes/spatial');
+const mysqlRoutes = require('./routes/mysql');
+const mysqlService = require('./config/mysql');
 const initSignalingServer = require('./sockets/signaling');
 const { runSpatialAudit } = require('./services/spatialAudit');
 
@@ -34,6 +36,7 @@ app.use(express.json());
 // Mount API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/spatial', spatialRoutes);
+app.use('/api/mysql', mysqlRoutes);
 
 // Initialize WebSocket Signaling & Avatar Movement System
 const signalingService = initSignalingServer(io);
@@ -47,6 +50,7 @@ app.get('/api/health', (req, res) => {
     project: 'ProxiSpeak: Geospatial Proximity Audio Ecosystem (Week 1 & 2)',
     organization: 'Infotact Solutions',
     database: dbStatus,
+    mysql: mysqlService.getStatus(),
     modules: {
       signaling: 'Socket.io WebSocket Active',
       geospatial: 'MongoDB 2D Index ($near & $geoWithin)',
@@ -81,6 +85,17 @@ mongoose.connect(MONGODB_URI)
   .catch((err) => {
     console.warn(`[ProxiSpeak] MongoDB connection warning: ${err.message}`);
     console.log('[ProxiSpeak] Running with in-memory fallback enabled.');
+  });
+
+// Initialize MySQL Database Connection (localhost:3306)
+mysqlService.init()
+  .then((connected) => {
+    if (!connected) {
+      console.log('[ProxiSpeak] MySQL connection pool ready in standby mode.');
+    }
+  })
+  .catch((err) => {
+    console.warn(`[ProxiSpeak] MySQL initialization notice: ${err.message}`);
   });
 
 // Start HTTP + WebSocket Server

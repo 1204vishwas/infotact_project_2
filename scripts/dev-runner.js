@@ -67,8 +67,22 @@ function runVerificationSuite() {
     });
 
     // 3. Multi-Node Socket.io & Redis Pub/Sub Scaling Benchmark
-    console.log(`\n${colors.blue}[3/3] Executing Multi-Node Socket.io & Redis Pub/Sub Scaling Verification...${colors.reset}`);
+    console.log(`\n${colors.blue}[3/4] Executing Multi-Node Socket.io & Redis Pub/Sub Scaling Verification...${colors.reset}`);
     execSync('node scripts/multi-node-cluster-demo.js', {
+      cwd: BACKEND_DIR,
+      stdio: 'inherit'
+    });
+
+    // 4. Room Persistence & Sound-Blocking Obstacles Test
+    console.log(`\n${colors.cyan}[4/5] Executing Room Persistence & Sound-Blocking Obstacles Test (MongoDB)...${colors.reset}`);
+    execSync('node scripts/room-persistence-test.js', {
+      cwd: BACKEND_DIR,
+      stdio: 'inherit'
+    });
+
+    // 5. MySQL Connection & Diagnostics Test
+    console.log(`\n${colors.yellow}[5/5] Executing MySQL Database Connection Verification (localhost:3306)...${colors.reset}`);
+    execSync('node scripts/mysql-connection-test.js', {
       cwd: BACKEND_DIR,
       stdio: 'inherit'
     });

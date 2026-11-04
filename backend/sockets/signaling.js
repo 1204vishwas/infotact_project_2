@@ -1,6 +1,8 @@
 const User = require('../models/User');
+const OfficeSpace = require('../models/OfficeSpace');
 const { RedisMeshAdapterService } = require('../services/redisAdapter');
 const { calculateAttenuation, ATTENUATION_MODELS } = require('../services/attenuationService');
+const { checkSoundOcclusion } = OfficeSpace;
 
 // ====================================================
 // WEBRTC MESH & PROXIMITY SCALING PARAMETERS
@@ -41,6 +43,15 @@ module.exports = function initSignalingServer(io, options = {}) {
 
   // Last movement timestamp cache for throttling distance updates (30Hz rate-limit)
   const lastMoveTimestamps = new Map();
+
+  // Active office furniture obstacles cached from MongoDB
+  let activeObstacles = [];
+  OfficeSpace.getOfficeLayout('proxify').then(({ office }) => {
+    activeObstacles = office.obstacles || [];
+    console.log(`[ProxiSpeak Room Persistence] Loaded ${activeObstacles.length} obstacles from MongoDB (${activeObstacles.filter(o => o.blocksSound).length} sound-blocking).`);
+  }).catch((err) => {
+    console.warn('[ProxiSpeak Room Persistence] Initial layout load note:', err.message);
+  });
 
   // Initialize Redis Pub/Sub scaling adapter
   const redisService = options.redisService || new RedisMeshAdapterService();
@@ -209,7 +220,8 @@ module.exports = function initSignalingServer(io, options = {}) {
           hysteresisRadiusLimit: WEBRTC_DISCONNECT_RADIUS,
           maxMeshPeers: MAX_MESH_PEERS,
           nodeInstanceId: redisService.nodeInstanceId,
-          clusterMode: redisService.mode
+          clusterMode: redisService.mode,
+          obstacles: activeObstacles
         });
 
         // 2. Broadcast new avatar arrival to all other connected avatars across all nodes
@@ -241,8 +253,10 @@ module.exports = function initSignalingServer(io, options = {}) {
           peerSet.add(socket.id);
           inRangePeerPairs.set(peerSocketId, peerSet);
 
-          const gain = calculateGain(distance, WEBRTC_PROXIMITY_RADIUS);
-          console.log(`[Proximity on Join] '${name}' joined within 100px of '${peerAvatar.name}' (${distance.toFixed(1)}px). WebRTC Offer Allowed.`);
+          const occlusion = checkSoundOcclusion(avatarProfile.location, peerAvatar.location, activeObstacles);
+          const isSoundBlocked = occlusion.isBlocked;
+          const gain = isSoundBlocked ? 0 : calculateGain(distance, WEBRTC_PROXIMITY_RADIUS);
+          console.log(`[Proximity on Join] '${name}' joined within 100px of '${peerAvatar.name}' (${distance.toFixed(1)}px). Occluded: ${isSoundBlocked}.`);
 
           // Notify newly joined avatar
           socket.emit('proximity-peer-entered', {
@@ -251,6 +265,8 @@ module.exports = function initSignalingServer(io, options = {}) {
             maxRadius: WEBRTC_PROXIMITY_RADIUS,
             gain,
             isCulled,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null,
             shouldInitiateOffer: socket.id < peerSocketId // deterministic offer initiator
           });
 
@@ -261,6 +277,8 @@ module.exports = function initSignalingServer(io, options = {}) {
             maxRadius: WEBRTC_PROXIMITY_RADIUS,
             gain,
             isCulled,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null,
             shouldInitiateOffer: peerSocketId < socket.id
           });
         });
@@ -366,11 +384,13 @@ module.exports = function initSignalingServer(io, options = {}) {
 
       activeCandidates.forEach(({ peerSocketId, peerAvatar, distance, wasInRange }, rank) => {
         const isCulled = rank >= MAX_MESH_PEERS;
-        const gain = calculateGain(distance, WEBRTC_PROXIMITY_RADIUS);
+        const occlusion = checkSoundOcclusion(avatar.location, peerAvatar.location, activeObstacles);
+        const isSoundBlocked = occlusion.isBlocked;
+        const gain = isSoundBlocked ? 0 : calculateGain(distance, WEBRTC_PROXIMITY_RADIUS);
 
         if (!wasInRange) {
           // Transition: Peer just ENTERED 100px earshot!
-          console.log(`[Proximity Transition] '${peerAvatar.name}' ENTERED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). WebRTC Offer Allowed.`);
+          console.log(`[Proximity Transition] '${peerAvatar.name}' ENTERED 100px radius of '${avatar.name}' (${distance.toFixed(1)}px). Sound Blocked: ${isSoundBlocked}.`);
 
           const peerSet = inRangePeerPairs.get(peerSocketId) || new Set();
           peerSet.add(socket.id);
@@ -382,6 +402,8 @@ module.exports = function initSignalingServer(io, options = {}) {
             maxRadius: WEBRTC_PROXIMITY_RADIUS,
             gain,
             isCulled,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null,
             shouldInitiateOffer: socket.id < peerSocketId
           });
 
@@ -391,6 +413,8 @@ module.exports = function initSignalingServer(io, options = {}) {
             maxRadius: WEBRTC_PROXIMITY_RADIUS,
             gain,
             isCulled,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null,
             shouldInitiateOffer: peerSocketId < socket.id
           });
         } else {
@@ -399,14 +423,18 @@ module.exports = function initSignalingServer(io, options = {}) {
             peerSocketId,
             distance: Math.round(distance),
             gain,
-            isCulled
+            isCulled,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null
           });
 
           io.to(peerSocketId).emit('proximity-distance-update', {
             peerSocketId: socket.id,
             distance: Math.round(distance),
             gain,
-            isCulled
+            isCulled,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null
           });
         }
       });
@@ -477,6 +505,22 @@ module.exports = function initSignalingServer(io, options = {}) {
         return;
       }
 
+      // --- ACOUSTIC SOUND OCCLUSION CHECK (FURNITURE OBSTACLES) ---
+      const occlusion = checkSoundOcclusion(sender.location, target.location, activeObstacles);
+      if (occlusion.isBlocked) {
+        console.warn(`[WebRTC Guard: BLOCKED] Offer from '${sender.name}' to '${target.name}' rejected: sound blocked by '${occlusion.blockingObstacle?.label}'.`);
+        socket.emit('webrtc-signal-rejected', {
+          type: 'offer',
+          targetSocketId,
+          targetName: target.name,
+          distance: Math.round(distance),
+          maxRadius: WEBRTC_PROXIMITY_RADIUS,
+          reason: 'SOUND_BLOCKED_BY_OBSTACLE',
+          message: `WebRTC Offer Blocked: Sound is blocked by acoustic barrier '${occlusion.blockingObstacle?.label}' (Blocks Sound = true).`
+        });
+        return;
+      }
+
       // Proximity verified: Distance is <= 100px
       const gain = calculateGain(distance, WEBRTC_PROXIMITY_RADIUS);
       console.log(`[WebRTC Guard: PERMITTED] Offer from '${sender.name}' to '${target.name}' accepted. Distance ${distance.toFixed(1)}px <= 100px (Gain: ${gain}%).`);
@@ -521,6 +565,22 @@ module.exports = function initSignalingServer(io, options = {}) {
           maxRadius: WEBRTC_PROXIMITY_RADIUS,
           reason: 'OUT_OF_PROXIMITY_RANGE',
           message: `WebRTC Answer Blocked: Caller '${caller.name}' is ${Math.round(distance)}px away, exceeding the 100-pixel earshot limit.`
+        });
+        return;
+      }
+
+      // --- ACOUSTIC SOUND OCCLUSION CHECK (FURNITURE OBSTACLES) ---
+      const occlusion = checkSoundOcclusion(callee.location, caller.location, activeObstacles);
+      if (occlusion.isBlocked) {
+        console.warn(`[WebRTC Guard: BLOCKED] Answer from '${callee.name}' to '${caller.name}' rejected: sound blocked by '${occlusion.blockingObstacle?.label}'.`);
+        socket.emit('webrtc-signal-rejected', {
+          type: 'answer',
+          targetSocketId,
+          targetName: caller.name,
+          distance: Math.round(distance),
+          maxRadius: WEBRTC_PROXIMITY_RADIUS,
+          reason: 'SOUND_BLOCKED_BY_OBSTACLE',
+          message: `WebRTC Answer Blocked: Sound is blocked by acoustic barrier '${occlusion.blockingObstacle?.label}' (Blocks Sound = true).`
         });
         return;
       }
@@ -575,7 +635,56 @@ module.exports = function initSignalingServer(io, options = {}) {
     });
 
     // ====================================================
-    // 6. DISCONNECT / LEAVE
+    // 6. ROOM LAYOUT & OBSTACLE PERSISTENCE (MONGODB SYNC)
+    // ====================================================
+    socket.on('save-room-layout', async (layoutData, callback) => {
+      try {
+        const result = await OfficeSpace.saveOfficeLayout('proxify', layoutData);
+        activeObstacles = result.office.obstacles || [];
+        io.emit('room-layout-updated', {
+          office: result.office,
+          source: result.source,
+          updatedBy: socket.id
+        });
+        if (typeof callback === 'function') {
+          callback({ success: true, office: result.office, source: result.source });
+        }
+      } catch (err) {
+        if (typeof callback === 'function') callback({ success: false, error: err.message });
+      }
+    });
+
+    socket.on('get-room-layout', async (callback) => {
+      try {
+        const { office, source } = await OfficeSpace.getOfficeLayout('proxify');
+        activeObstacles = office.obstacles || [];
+        if (typeof callback === 'function') {
+          callback({ success: true, office, source });
+        }
+      } catch (err) {
+        if (typeof callback === 'function') callback({ success: false, error: err.message });
+      }
+    });
+
+    socket.on('reset-room-layout', async (callback) => {
+      try {
+        const result = await OfficeSpace.resetToDefault('proxify');
+        activeObstacles = result.office.obstacles || [];
+        io.emit('room-layout-updated', {
+          office: result.office,
+          source: result.source,
+          updatedBy: socket.id
+        });
+        if (typeof callback === 'function') {
+          callback({ success: true, office: result.office, source: result.source });
+        }
+      } catch (err) {
+        if (typeof callback === 'function') callback({ success: false, error: err.message });
+      }
+    });
+
+    // ====================================================
+    // 7. DISCONNECT / LEAVE
     // ====================================================
     socket.on('disconnect', async () => {
       const leavingAvatar = activeAvatars.get(socket.id);

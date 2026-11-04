@@ -9,7 +9,9 @@
     "audit": "node scripts/audit-benchmark.js",
     "audio-check": "node scripts/audio-check-demo.js",
     "cluster-check": "node scripts/multi-node-cluster-demo.js",
-    "attenuation-test": "node scripts/attenuation-benchmark.js"
+    "attenuation-test": "node scripts/attenuation-benchmark.js",
+    "room-test": "node scripts/room-persistence-test.js",
+    "mysql-test": "node scripts/mysql-connection-test.js"
   },
   "dependencies": {
     "@socket.io/redis-adapter": "^8.3.0",
@@ -19,6 +21,7 @@
     "express": "^4.21.2",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.9.5",
+    "mysql2": "^3.24.6",
     "proxispeak-project-2": "file:..",
     "redis": "^6.3.1",
     "socket.io": "^4.8.4"

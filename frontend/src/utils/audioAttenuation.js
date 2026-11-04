@@ -314,3 +314,103 @@ export function generateAttenuationCurve(model = ATTENUATION_MODELS.EXPONENTIAL,
 
   return points;
 }
+
+/**
+ * 2D Line Segment vs Axis-Aligned Bounding Box (AABB) Intersection
+ * Uses Liang-Barsky parametric clipping algorithm.
+ */
+export function lineIntersectsBox(x1, y1, x2, y2, box) {
+  const xMin = box.x;
+  const xMax = box.x + box.width;
+  const yMin = box.y;
+  const yMax = box.y + box.height;
+
+  // Check if either point is inside the box
+  if ((x1 >= xMin && x1 <= xMax && y1 >= yMin && y1 <= yMax) ||
+      (x2 >= xMin && x2 <= xMax && y2 >= yMin && y2 <= yMax)) {
+    return {
+      intersects: true,
+      t: 0,
+      intersectionPoint: { x: x1, y: y1 }
+    };
+  }
+
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+
+  const p = [-dx, dx, -dy, dy];
+  const q = [x1 - xMin, xMax - x1, y1 - yMin, yMax - y1];
+
+  let u1 = 0;
+  let u2 = 1;
+
+  for (let i = 0; i < 4; i++) {
+    if (p[i] === 0) {
+      if (q[i] < 0) return { intersects: false };
+    } else {
+      const t = q[i] / p[i];
+      if (p[i] < 0) {
+        if (t > u2) return { intersects: false };
+        if (t > u1) u1 = t;
+      } else {
+        if (t < u1) return { intersects: false };
+        if (t < u2) u2 = t;
+      }
+    }
+  }
+
+  if (u1 <= u2) {
+    const hitX = Math.round((x1 + u1 * dx) * 10) / 10;
+    const hitY = Math.round((y1 + u1 * dy) * 10) / 10;
+    return {
+      intersects: true,
+      t: u1,
+      intersectionPoint: { x: hitX, y: hitY }
+    };
+  }
+
+  return { intersects: false };
+}
+
+/**
+ * Checks if line of sight between two avatars is occluded by any furniture obstacle
+ * that blocks sound (blocksSound: true).
+ */
+export function checkSoundOcclusion(locA, locB, obstacles = []) {
+  if (!locA || !locB) {
+    return { isBlocked: false, blockingObstacles: [], blockingObstacle: null };
+  }
+
+  const x1 = Array.isArray(locA) ? locA[0] : locA.x;
+  const y1 = Array.isArray(locA) ? locA[1] : locA.y;
+  const x2 = Array.isArray(locB) ? locB[0] : locB.x;
+  const y2 = Array.isArray(locB) ? locB[1] : locB.y;
+
+  const blockingObstacles = [];
+  let firstIntersection = null;
+
+  for (const obs of obstacles) {
+    if (!obs || !obs.blocksSound) continue;
+
+    const hit = lineIntersectsBox(x1, y1, x2, y2, obs);
+    if (hit.intersects) {
+      blockingObstacles.push({
+        ...obs,
+        hitPoint: hit.intersectionPoint,
+        hitT: hit.t
+      });
+      if (!firstIntersection || hit.t < firstIntersection.hitT) {
+        firstIntersection = { ...obs, hitPoint: hit.intersectionPoint, hitT: hit.t };
+      }
+    }
+  }
+
+  const isBlocked = blockingObstacles.length > 0;
+  return {
+    isBlocked,
+    blockingObstacle: firstIntersection,
+    blockingObstacles,
+    blockCount: blockingObstacles.length,
+    reason: isBlocked ? `Sound blocked by '${firstIntersection.label}'` : 'Clear line of sight'
+  };
+}
