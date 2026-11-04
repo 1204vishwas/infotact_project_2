@@ -27,13 +27,142 @@ import {
   AlertCircle,
   Play,
   Square,
-  Wrench
+  Wrench,
+  Building2,
+  Save,
+  Database
 } from 'lucide-react';
 
 import { WebRTCAudioManager } from '../utils/webrtcManager';
+import { checkSoundOcclusion } from '../utils/audioAttenuation';
 import AudioWaveformVisualizer from './AudioWaveformVisualizer';
 import SpatialAuditModal from './SpatialAuditModal';
 import AudioCheckModal from './AudioCheckModal';
+import RoomLayoutModal from './RoomLayoutModal';
+import MySQLStatusModal from './MySQLStatusModal';
+
+// Default Office Obstacles with Sound-Blocking Barriers
+const DEFAULT_OBSTACLES = [
+  // --- SOUND-BLOCKING FURNITURE OBSTACLES (blocksSound: true) ---
+  {
+    id: 'acoustic-wall-central',
+    label: 'Acoustic Soundproof Wall',
+    type: 'acoustic-wall',
+    x: 468,
+    y: 50,
+    width: 24,
+    height: 220,
+    color: '#312e81',
+    blocksSound: true,
+    soundReduction: 1.0,
+    soundReductionDb: 45
+  },
+  {
+    id: 'booth-audio-lab',
+    label: 'Sound Isolation Booth',
+    type: 'sound-booth',
+    x: 270,
+    y: 80,
+    width: 140,
+    height: 90,
+    color: '#064e3b',
+    blocksSound: true,
+    soundReduction: 1.0,
+    soundReductionDb: 50
+  },
+  {
+    id: 'glass-partition-lounge',
+    label: 'Soundproof Glass Partition',
+    type: 'glass-partition',
+    x: 468,
+    y: 370,
+    width: 24,
+    height: 220,
+    color: '#0369a1',
+    blocksSound: true,
+    soundReduction: 1.0,
+    soundReductionDb: 40
+  },
+
+  // --- OPEN FURNITURE / NON-BLOCKING (blocksSound: false) ---
+  {
+    id: 'desk-dev-1',
+    label: 'WebRTC Cluster Pod 1',
+    type: 'desk',
+    x: 550,
+    y: 80,
+    width: 140,
+    height: 60,
+    color: '#1e293b',
+    blocksSound: false
+  },
+  {
+    id: 'desk-dev-2',
+    label: 'WebSocket Cluster Pod 2',
+    type: 'desk',
+    x: 740,
+    y: 80,
+    width: 140,
+    height: 60,
+    color: '#1e293b',
+    blocksSound: false
+  },
+  {
+    id: 'desk-dev-3',
+    label: 'Frontend Mesh Station',
+    type: 'desk',
+    x: 550,
+    y: 190,
+    width: 140,
+    height: 60,
+    color: '#1e293b',
+    blocksSound: false
+  },
+  {
+    id: 'desk-dev-4',
+    label: 'Node Gateway Station',
+    type: 'desk',
+    x: 740,
+    y: 190,
+    width: 140,
+    height: 60,
+    color: '#1e293b',
+    blocksSound: false
+  },
+  {
+    id: 'audio-console-1',
+    label: 'Audio DSP Mixing Board',
+    type: 'console',
+    x: 70,
+    y: 90,
+    width: 150,
+    height: 60,
+    color: '#1e293b',
+    blocksSound: false
+  },
+  {
+    id: 'product-island',
+    label: 'UX Wireframe Island',
+    type: 'table',
+    x: 80,
+    y: 440,
+    width: 180,
+    height: 70,
+    color: '#1e293b',
+    blocksSound: false
+  },
+  {
+    id: 'lounge-island',
+    label: 'Pantry Island & Water Cooler',
+    type: 'table',
+    x: 640,
+    y: 440,
+    width: 160,
+    height: 70,
+    color: '#1e293b',
+    blocksSound: false
+  }
+];
 
 export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast }) {
   const canvasRef = useRef(null);
@@ -59,6 +188,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   const [isSpatialAuditOpen, setIsSpatialAuditOpen] = useState(false);
   const [isAudioCheckOpen, setIsAudioCheckOpen] = useState(false);
+  const [isRoomManagerOpen, setIsRoomManagerOpen] = useState(false);
+  const [isMySQLModalOpen, setIsMySQLModalOpen] = useState(false);
+  const [mySQLStatus, setMySQLStatus] = useState({ connected: false, port: 3306 });
+  const [isSavingRoom, setIsSavingRoom] = useState(false);
+  const [roomSource, setRoomSource] = useState('mongodb');
+  const [officeName, setOfficeName] = useState('ProxiSpeak Headquarters');
+
+  // Room Persistence & Obstacles state
+  const [obstacles, setObstacles] = useState(DEFAULT_OBSTACLES);
+  const obstaclesRef = useRef(DEFAULT_OBSTACLES);
   const [clusterInfo, setClusterInfo] = useState({
     clusterMode: 'in-memory-broker',
     nodeInstanceId: 'local',
@@ -131,21 +270,108 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     }
   ];
 
-  // Furniture & Obstacles
-  const obstacles = [
-    // Core Engineering Bay Desks
-    { x: 550, y: 80, width: 140, height: 60, label: 'WebRTC Cluster Pod 1', color: '#1e293b' },
-    { x: 740, y: 80, width: 140, height: 60, label: 'WebSocket Cluster Pod 2', color: '#1e293b' },
-    { x: 550, y: 190, width: 140, height: 60, label: 'Frontend Mesh Station', color: '#1e293b' },
-    { x: 740, y: 190, width: 140, height: 60, label: 'Node Gateway Station', color: '#1e293b' },
-    // Audio Lab Consoles
-    { x: 70, y: 90, width: 150, height: 60, label: 'Audio DSP Mixing Board', color: '#1e293b' },
-    { x: 260, y: 90, width: 140, height: 60, label: 'Acoustic Synthesizer Rack', color: '#1e293b' },
-    // Product Hub Desks
-    { x: 80, y: 440, width: 180, height: 70, label: 'UX Wireframe Island', color: '#1e293b' },
-    // Lounge Pantry Coffee & Table
-    { x: 640, y: 440, width: 160, height: 70, label: 'Pantry Island & Water Cooler', color: '#1e293b' }
-  ];
+  // Load office room layout and obstacles from MongoDB
+  useEffect(() => {
+    fetch('/api/spatial/room')
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.success && data.office) {
+          if (Array.isArray(data.office.obstacles) && data.office.obstacles.length > 0) {
+            setObstacles(data.office.obstacles);
+            obstaclesRef.current = data.office.obstacles;
+          }
+          if (data.office.name) setOfficeName(data.office.name);
+          setRoomSource(data.source || 'mongodb');
+          console.log(`[VirtualOfficeWorld] Loaded office layout from ${data.source}: ${data.office.obstacles?.length} obstacles`);
+        }
+      })
+      .catch((err) => console.warn('[Room Persistence] Fetch error:', err));
+  }, []);
+
+  // Poll MySQL connection status on port 3306
+  useEffect(() => {
+    const checkMySQL = () => {
+      fetch('/api/mysql/status')
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success && data.data) {
+            setMySQLStatus(data.data);
+          }
+        })
+        .catch(() => {});
+    };
+    checkMySQL();
+    const interval = setInterval(checkMySQL, 15000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Update obstacles state & ref synchronously
+  const handleUpdateObstacles = (newObstacles) => {
+    setObstacles(newObstacles);
+    obstaclesRef.current = newObstacles;
+  };
+
+  // Save room layout & sound-blocking obstacles to MongoDB
+  const handleSaveLayoutToMongo = async () => {
+    setIsSavingRoom(true);
+    try {
+      const res = await fetch('/api/spatial/room', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: officeName,
+          cluster: 'proxify',
+          dimensions: { width: WORLD_WIDTH, height: WORLD_HEIGHT },
+          zones,
+          obstacles
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setRoomSource(data.source || 'mongodb');
+        if (socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit('save-room-layout', {
+            name: officeName,
+            cluster: 'proxify',
+            dimensions: { width: WORLD_WIDTH, height: WORLD_HEIGHT },
+            zones,
+            obstacles
+          });
+        }
+        showToast(`Office layout & ${obstacles.length} furniture obstacles saved into MongoDB!`, 'success');
+      } else {
+        showToast(`Failed to save layout: ${data.message}`, 'error');
+      }
+    } catch (err) {
+      showToast(`Error saving to MongoDB: ${err.message}`, 'error');
+    } finally {
+      setIsSavingRoom(false);
+    }
+  };
+
+  // Reset room layout to defaults in MongoDB
+  const handleResetLayout = async () => {
+    try {
+      const res = await fetch('/api/spatial/room/reset', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cluster: 'proxify' })
+      });
+      const data = await res.json();
+      if (data.success && data.office) {
+        const restored = data.office.obstacles || DEFAULT_OBSTACLES;
+        setObstacles(restored);
+        obstaclesRef.current = restored;
+        setRoomSource(data.source || 'mongodb');
+        if (socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit('reset-room-layout');
+        }
+        showToast('Office layout and obstacles reset to factory defaults in MongoDB.', 'success');
+      }
+    } catch (err) {
+      showToast(`Error resetting layout: ${err.message}`, 'error');
+    }
+  };
 
   // Helper: Find current office zone
   const getZoneAt = (x, y) => {
@@ -262,9 +488,13 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       console.log('[ProxiSpeak Socket] Disconnected from server');
     });
 
-    // Receive space state (initial active peers)
-    socket.on('space-state', ({ self, peers: existingPeers, totalOnline, clusterMode, nodeInstanceId, maxMeshPeers, hysteresisRadiusLimit }) => {
+    // Receive space state (initial active peers & MongoDB room layout)
+    socket.on('space-state', ({ self, peers: existingPeers, totalOnline, clusterMode, nodeInstanceId, maxMeshPeers, hysteresisRadiusLimit, obstacles: roomObs }) => {
       setOnlineCount(totalOnline || 1);
+      if (Array.isArray(roomObs) && roomObs.length > 0) {
+        setObstacles(roomObs);
+        obstaclesRef.current = roomObs;
+      }
       if (clusterMode || nodeInstanceId) {
         setClusterInfo({
           clusterMode: clusterMode || 'in-memory-broker',
@@ -292,6 +522,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         });
       }
       peersRef.current = newPeers;
+    });
+
+    // Real-time Room Layout sync from MongoDB across all connected tabs
+    socket.on('room-layout-updated', ({ office, source }) => {
+      if (office && Array.isArray(office.obstacles)) {
+        setObstacles(office.obstacles);
+        obstaclesRef.current = office.obstacles;
+        setRoomSource(source || 'mongodb');
+        showToast(`Office layout updated in MongoDB (${office.obstacles.length} obstacles)`, 'info');
+      }
     });
 
     // Remote peer joined
@@ -830,22 +1070,62 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       ctx.textAlign = 'center';
       ctx.fillText('Main Round Table', centerX, centerY + 4);
 
-      // --- D. DRAW DESKS & OBSTACLES ---
-      obstacles.forEach((obs) => {
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+      // --- D. DRAW DESKS & OBSTACLES (INCLUDING SOUNDPROOF WALLS & BOOTHS) ---
+      obstaclesRef.current.forEach((obs) => {
+        // Shadow
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
         ctx.fillRect(obs.x + 3, obs.y + 3, obs.width, obs.height);
 
-        ctx.fillStyle = obs.color;
-        ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+        if (obs.blocksSound) {
+          // --- SOUNDPROOF ACOUSTIC BARRIER (blocksSound: true) ---
+          ctx.fillStyle = obs.color || '#312e81';
+          ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
 
-        ctx.strokeStyle = '#334155';
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+          // Acoustic sound-dampening diagonal hatching
+          ctx.save();
+          ctx.beginPath();
+          ctx.rect(obs.x, obs.y, obs.width, obs.height);
+          ctx.clip();
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+          ctx.lineWidth = 2;
+          const stripeStep = 12;
+          for (let sx = obs.x - obs.height; sx < obs.x + obs.width; sx += stripeStep) {
+            ctx.beginPath();
+            ctx.moveTo(sx, obs.y + obs.height);
+            ctx.lineTo(sx + obs.height, obs.y);
+            ctx.stroke();
+          }
+          ctx.restore();
 
-        ctx.fillStyle = '#cbd5e1';
-        ctx.font = '10px "Plus Jakarta Sans", sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(obs.label, obs.x + obs.width / 2, obs.y + obs.height / 2 + 3);
+          // Acoustic barrier glowing border
+          ctx.strokeStyle = '#818cf8';
+          ctx.lineWidth = 2;
+          ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+
+          // Obstacle label
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(obs.label, obs.x + obs.width / 2, obs.y + obs.height / 2 - 3);
+
+          // Soundproof tag
+          ctx.fillStyle = '#f87171';
+          ctx.font = 'bold 8px "Plus Jakarta Sans", sans-serif';
+          ctx.fillText('🔇 SOUNDPROOF', obs.x + obs.width / 2, obs.y + obs.height / 2 + 8);
+        } else {
+          // --- OPEN COLLABORATION FURNITURE (DESKS / TABLES) ---
+          ctx.fillStyle = obs.color || '#1e293b';
+          ctx.fillRect(obs.x, obs.y, obs.width, obs.height);
+
+          ctx.strokeStyle = '#334155';
+          ctx.lineWidth = 1.5;
+          ctx.strokeRect(obs.x, obs.y, obs.width, obs.height);
+
+          ctx.fillStyle = '#cbd5e1';
+          ctx.font = '10px "Plus Jakarta Sans", sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(obs.label, obs.x + obs.width / 2, obs.y + obs.height / 2 + 3);
+        }
       });
 
       // --- E. UPDATE LOCAL AVATAR PHYSICS ---
@@ -899,7 +1179,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       nextX = Math.max(AVATAR_RADIUS + 8, Math.min(WORLD_WIDTH - AVATAR_RADIUS - 8, nextX));
       nextY = Math.max(AVATAR_RADIUS + 8, Math.min(WORLD_HEIGHT - AVATAR_RADIUS - 8, nextY));
 
-      obstacles.forEach((obs) => {
+      obstaclesRef.current.forEach((obs) => {
         const closestX = Math.max(obs.x, Math.min(nextX, obs.x + obs.width));
         const closestY = Math.max(obs.y, Math.min(nextY, obs.y + obs.height));
         const distX = nextX - closestX;
@@ -975,96 +1255,141 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         const dy = peer.y - pos.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
 
-        // Update WebRTC volume attenuation based on distance using configured Web Audio API algorithm
+        // Check line-of-sight sound occlusion against obstacles with blocksSound: true
+        const occlusion = checkSoundOcclusion([pos.x, pos.y], [peer.x, peer.y], obstaclesRef.current);
+        const isSoundBlocked = occlusion.isBlocked;
+
+        // Update WebRTC volume attenuation based on distance & sound blockage
         let attenuation = null;
         if (webrtcManagerRef.current) {
           if (!peer.isBot) {
-            attenuation = webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, earshotRadius, dx, false, 115);
+            attenuation = webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, earshotRadius, dx, false, 115, isSoundBlocked);
           } else {
-            attenuation = webrtcManagerRef.current.calculateAttenuation(distance, { maxRadius: earshotRadius, deltaX: dx });
+            attenuation = webrtcManagerRef.current.calculateAttenuation(distance, { maxRadius: earshotRadius, deltaX: dx, isCulled: isSoundBlocked });
           }
         }
 
-        // Adjust bot synthesizer gain dynamically based on distance
+        // Adjust bot synthesizer gain dynamically based on distance & occlusion
         if (peer.isBot && botOscillatorRef.current) {
-          const botGain = attenuation && distance <= earshotRadius ? attenuation.gain * 0.08 : 0;
+          const botGain = attenuation && distance <= earshotRadius && !isSoundBlocked ? attenuation.gain * 0.08 : 0;
           botOscillatorRef.current.gain.gain.setValueAtTime(botGain, webrtcManagerRef.current?.getAudioContext()?.currentTime || 0);
         }
 
         if (distance <= earshotRadius) {
-          const gain = attenuation ? attenuation.gainPercent : Math.max(10, Math.min(100, Math.round((1 - distance / earshotRadius) * 100)));
-          const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive ? 0.35 : 0);
+          const baseGain = attenuation ? attenuation.gainPercent : Math.max(10, Math.min(100, Math.round((1 - distance / earshotRadius) * 100)));
+          const effectiveGain = isSoundBlocked ? 0 : baseGain;
+          const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive && !isSoundBlocked ? 0.35 : 0);
 
           activePeersInRadius.push({
             socketId: peer.socketId,
             name: peer.name,
             role: peer.role,
             distance: Math.round(distance),
-            gain: Math.max(10, Math.min(100, gain)),
-            decibels: attenuation?.decibels,
+            gain: effectiveGain,
+            isSoundBlocked,
+            blockingObstacle: occlusion.blockingObstacle?.label || null,
+            decibels: isSoundBlocked ? -Infinity : attenuation?.decibels,
             filterFreq: attenuation?.filterFreq,
             pan: attenuation?.pan,
             audioLevel: peerAudioLvl,
-            isSpeaking: peerAudioLvl > 0.05 && !peer.micMuted,
+            isSpeaking: peerAudioLvl > 0.05 && !peer.micMuted && !isSoundBlocked,
             connectionState: peerConnectionStates[peer.socketId] || (peer.isBot ? 'connected' : 'connecting')
           });
 
-          // --- DYNAMIC WEBRTC ACOUSTIC SINE WAVE BEAM ---
-          // Vector perpendicular for sinusoidal undulating sound wave
-          const normalX = -dy / distance;
-          const normalY = dx / distance;
-          const segments = 32;
+          if (isSoundBlocked) {
+            // --- DRAW SOUND-OCCLUDED BEAM (BLOCKED BY ACOUSTIC OBSTACLE) ---
+            ctx.beginPath();
+            ctx.setLineDash([5, 5]);
+            ctx.moveTo(pos.x, pos.y);
+            ctx.lineTo(peer.x, peer.y);
+            ctx.strokeStyle = 'rgba(244, 63, 94, 0.7)';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.setLineDash([]);
 
-          ctx.beginPath();
-          for (let s = 0; s <= segments; s++) {
-            const t = s / segments;
-            const px = pos.x + dx * t;
-            const py = pos.y + dy * t;
+            // Acoustic absorption ripple at obstacle impact point
+            if (occlusion.blockingObstacle?.hitPoint) {
+              const hit = occlusion.blockingObstacle.hitPoint;
+              const ripR = (time * 16) % 18;
+              ctx.beginPath();
+              ctx.arc(hit.x, hit.y, ripR, 0, Math.PI * 2);
+              ctx.strokeStyle = `rgba(244, 63, 94, ${0.8 - ripR / 18})`;
+              ctx.lineWidth = 1.5;
+              ctx.stroke();
+            }
 
-            // Amplitude increases when either peer or user speaks
-            const waveAmp = (4 + 10 * (localAudioLevel + peerAudioLvl)) * Math.sin(t * Math.PI);
-            const waveOffset = Math.sin(t * 14 - time * 6) * waveAmp;
+            // Midpoint blocked sound badge
+            const midX = (pos.x + peer.x) / 2;
+            const midY = (pos.y + peer.y) / 2;
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+            ctx.beginPath();
+            ctx.roundRect(midX - 70, midY - 12, 140, 24, 6);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(244, 63, 94, 0.6)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
 
-            const wx = px + normalX * waveOffset;
-            const wy = py + normalY * waveOffset;
+            ctx.fillStyle = '#f87171';
+            ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`🔇 BLOCKED: ${occlusion.blockingObstacle?.label || 'Acoustic Wall'}`, midX, midY + 4);
+          } else {
+            // --- DYNAMIC WEBRTC ACOUSTIC SINE WAVE BEAM (CLEAR LINE OF SIGHT) ---
+            const normalX = -dy / distance;
+            const normalY = dx / distance;
+            const segments = 32;
 
-            if (s === 0) ctx.moveTo(wx, wy);
-            else ctx.lineTo(wx, wy);
+            ctx.beginPath();
+            for (let s = 0; s <= segments; s++) {
+              const t = s / segments;
+              const px = pos.x + dx * t;
+              const py = pos.y + dy * t;
+
+              // Amplitude increases when either peer or user speaks
+              const waveAmp = (4 + 10 * (localAudioLevel + peerAudioLvl)) * Math.sin(t * Math.PI);
+              const waveOffset = Math.sin(t * 14 - time * 6) * waveAmp;
+
+              const wx = px + normalX * waveOffset;
+              const wy = py + normalY * waveOffset;
+
+              if (s === 0) ctx.moveTo(wx, wy);
+              else ctx.lineTo(wx, wy);
+            }
+
+            const beamGrad = ctx.createLinearGradient(pos.x, pos.y, peer.x, peer.y);
+            beamGrad.addColorStop(0, `rgba(56, 189, 248, ${0.4 + (effectiveGain / 100) * 0.5})`);
+            beamGrad.addColorStop(0.5, `rgba(99, 102, 241, ${0.5 + (effectiveGain / 100) * 0.5})`);
+            beamGrad.addColorStop(1, `rgba(16, 185, 129, ${0.4 + (effectiveGain / 100) * 0.5})`);
+
+            ctx.strokeStyle = beamGrad;
+            ctx.lineWidth = 2.5;
+            ctx.stroke();
+
+            // Midpoint audio wave pulse circle
+            const midX = (pos.x + peer.x) / 2;
+            const midY = (pos.y + peer.y) / 2;
+            const pulseRadius = (time * 18) % 24;
+
+            ctx.beginPath();
+            ctx.arc(midX, midY, pulseRadius, 0, Math.PI * 2);
+            ctx.strokeStyle = `rgba(56, 189, 248, ${0.7 - pulseRadius / 24})`;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            // Sleek floating WebRTC Audio badge at midpoint
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+            ctx.beginPath();
+            ctx.roundRect(midX - 52, midY - 11, 104, 22, 6);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+
+            ctx.fillStyle = '#38bdf8';
+            ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`GAIN: ${effectiveGain}% (${Math.round(distance)}px)`, midX, midY + 4);
           }
-
-          const beamGrad = ctx.createLinearGradient(pos.x, pos.y, peer.x, peer.y);
-          beamGrad.addColorStop(0, `rgba(56, 189, 248, ${0.4 + (gain / 100) * 0.5})`);
-          beamGrad.addColorStop(0.5, `rgba(99, 102, 241, ${0.5 + (gain / 100) * 0.5})`);
-          beamGrad.addColorStop(1, `rgba(16, 185, 129, ${0.4 + (gain / 100) * 0.5})`);
-
-          ctx.strokeStyle = beamGrad;
-          ctx.lineWidth = 2.5;
-          ctx.stroke();
-
-          // Midpoint audio wave pulse circle
-          const midX = (pos.x + peer.x) / 2;
-          const midY = (pos.y + peer.y) / 2;
-          const pulseRadius = (time * 18) % 24;
-
-          ctx.beginPath();
-          ctx.arc(midX, midY, pulseRadius, 0, Math.PI * 2);
-          ctx.strokeStyle = `rgba(56, 189, 248, ${0.7 - pulseRadius / 24})`;
-          ctx.lineWidth = 1.5;
-          ctx.stroke();
-
-          // Sleek floating WebRTC Audio badge at midpoint
-          ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
-          ctx.beginPath();
-          ctx.roundRect(midX - 52, midY - 11, 104, 22, 6);
-          ctx.fill();
-          ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
-          ctx.lineWidth = 1;
-          ctx.stroke();
-
-          ctx.fillStyle = '#38bdf8';
-          ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
-          ctx.textAlign = 'center';
-          ctx.fillText(`GAIN: ${gain}% (${Math.round(distance)}px)`, midX, midY + 4);
         }
       });
 
@@ -1249,10 +1574,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
               <span className="text-[9px] sm:text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30 whitespace-nowrap">
                 Week 2: WebRTC Audio Mesh
               </span>
+              <span className="text-[9px] sm:text-[10px] font-mono px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 flex items-center gap-1 whitespace-nowrap">
+                <Database className="w-2.5 h-2.5" />
+                MongoDB: {obstacles.length} Obstacles ({obstacles.filter((o) => o.blocksSound).length} 🔇)
+              </span>
             </div>
             <div className="flex flex-wrap items-center gap-1.5 text-[11px] sm:text-xs text-slate-400 mt-0.5">
               <span className="text-emerald-400 font-medium">{currentZone}</span>
-              <span>GAIN</span>
+              <span>•</span>
               <span className="font-mono text-slate-400">
                 Coordinates: [{coords.x}, {coords.y}]
               </span>
@@ -1281,6 +1610,26 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
 
           {/* Quick Actions */}
           <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setIsMySQLModalOpen(true)}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-cyan-700/80 hover:bg-cyan-600 border border-cyan-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-cyan-600/20 cursor-pointer transition-all"
+              title="Connect & Inspect MySQL Database on localhost:3306"
+            >
+              <Database className="w-3.5 h-3.5 text-cyan-200" />
+              <span>MySQL :3306 {mySQLStatus?.connected ? '🟢' : '🟡'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsRoomManagerOpen(true)}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-violet-600/80 hover:bg-violet-600 border border-violet-500/40 text-white text-[11px] sm:text-xs font-semibold flex items-center space-x-1.5 shadow-md shadow-violet-600/20 cursor-pointer transition-all"
+              title="Save & Manage Office Layout and Sound-Blocking Obstacles in MongoDB"
+            >
+              <Building2 className="w-3.5 h-3.5 text-violet-200" />
+              <span>Room & Obstacles ({obstacles.filter((o) => o.blocksSound).length} 🔇)</span>
+            </button>
+
             <button
               type="button"
               onClick={() => setIsAudioCheckOpen(true)}
@@ -1423,9 +1772,15 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
                 <div key={idx} className="text-[10px] sm:text-[11px] text-emerald-200/90 font-mono flex items-center justify-between gap-2 py-0.5">
                   <span className="truncate">{peer.name}:</span>
                   <div className="flex items-center space-x-1.5 shrink-0">
-                    <span className="text-emerald-400 font-bold">{peer.gain}% ({peer.distance}px)</span>
-                    <span className="text-[9px] px-1 py-0.5 rounded bg-emerald-900/80 text-emerald-300 font-mono">
-                      {peer.connectionState === 'connected' ? 'Live Audio' : 'Connecting'}
+                    {peer.isSoundBlocked ? (
+                      <span className="text-rose-400 font-bold text-[10px]">
+                        🔇 BLOCKED ({peer.blockingObstacle || 'Wall'})
+                      </span>
+                    ) : (
+                      <span className="text-emerald-400 font-bold">{peer.gain}% ({peer.distance}px)</span>
+                    )}
+                    <span className={`text-[9px] px-1 py-0.5 rounded font-mono ${peer.isSoundBlocked ? 'bg-rose-950/80 text-rose-300 border border-rose-500/30' : 'bg-emerald-900/80 text-emerald-300'}`}>
+                      {peer.isSoundBlocked ? 'Sound Muted' : peer.connectionState === 'connected' ? 'Live Audio' : 'Connecting'}
                     </span>
                     {peer.socketId && (
                       <button
@@ -1753,6 +2108,35 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         onMoveToDistance={handleMoveToDistance}
         showToast={showToast}
         clusterInfo={clusterInfo}
+      />
+
+      {/* ====================================================
+          12. ROOM PERSISTENCE & SOUND-BLOCKING OBSTACLES (MONGODB)
+         ==================================================== */}
+      <RoomLayoutModal
+        isOpen={isRoomManagerOpen}
+        onClose={() => setIsRoomManagerOpen(false)}
+        obstacles={obstacles}
+        onUpdateObstacles={handleUpdateObstacles}
+        onSaveToMongo={handleSaveLayoutToMongo}
+        onResetLayout={handleResetLayout}
+        roomSource={roomSource}
+        isSaving={isSavingRoom}
+        showToast={showToast}
+      />
+
+      {/* ====================================================
+          13. MYSQL DATABASE MANAGER (LOCALHOST:3306)
+         ==================================================== */}
+      <MySQLStatusModal
+        isOpen={isMySQLModalOpen}
+        onClose={() => {
+          setIsMySQLModalOpen(false);
+          fetch('/api/mysql/status')
+            .then((r) => r.json())
+            .then((data) => data.success && setMySQLStatus(data.data))
+            .catch(() => {});
+        }}
       />
     </div>
   );

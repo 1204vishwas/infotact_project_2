@@ -2,103 +2,293 @@ const express = require('express');
 const router = express.Router();
 const User = require('../models/User');
 const OfficeSpace = require('../models/OfficeSpace');
+const { DEFAULT_OFFICE_ZONES, DEFAULT_OBSTACLES, checkSoundOcclusion } = OfficeSpace;
 const { runSpatialAudit, filterUsersByProximity, clusterUsersByProximity, generateTestAvatars } = require('../services/spatialAudit');
 
-// Default Office Zones for ProxiSpeak 2D World
-const DEFAULT_OFFICE_ZONES = [
-  {
-    id: 'zone-audio',
-    name: 'Spatial Audio Lab',
-    type: 'audio-lab',
-    bounds: { x: 40, y: 40, width: 340, height: 260 },
-    color: 'rgba(99, 102, 241, 0.12)',
-    description: '3D Stereo Panning & Acoustic Testing Chamber'
-  },
-  {
-    id: 'zone-engineering',
-    name: 'Core WebRTC Bay',
-    type: 'engineering',
-    bounds: { x: 420, y: 40, width: 440, height: 260 },
-    color: 'rgba(16, 185, 129, 0.12)',
-    description: 'Real-time WebSocket & Canvas Layer Devs'
-  },
-  {
-    id: 'zone-product',
-    name: 'Product & Design Hub',
-    type: 'product-hub',
-    bounds: { x: 40, y: 340, width: 340, height: 280 },
-    color: 'rgba(245, 158, 11, 0.12)',
-    description: 'UI/UX Wireframes & Virtual Office Strategy'
-  },
-  {
-    id: 'zone-lounge',
-    name: 'Breakout Lounge & Pantry',
-    type: 'breakout-lounge',
-    bounds: { x: 420, y: 340, width: 440, height: 280 },
-    color: 'rgba(236, 72, 153, 0.12)',
-    description: 'Casual Water Cooler Chat & Coffee Station'
-  }
-];
-
-// Default Office Obstacles (Desks, Tables, Walls)
-const DEFAULT_OBSTACLES = [
-  // Engineering Desks
-  { id: 'desk-1', type: 'desk', x: 480, y: 100, width: 120, height: 50, label: 'Dev Desk 1' },
-  { id: 'desk-2', type: 'desk', x: 680, y: 100, width: 120, height: 50, label: 'Dev Desk 2' },
-  { id: 'desk-3', type: 'desk', x: 480, y: 200, width: 120, height: 50, label: 'Dev Desk 3' },
-  { id: 'desk-4', type: 'desk', x: 680, y: 200, width: 120, height: 50, label: 'Dev Desk 4' },
-  // Audio Lab Consoles
-  { id: 'audio-console-1', type: 'console', x: 90, y: 110, width: 110, height: 60, label: 'Mixing Console' },
-  { id: 'audio-console-2', type: 'console', x: 230, y: 110, width: 110, height: 60, label: 'Synthesizer Desk' },
-  // Lounge Coffee Table & Couch
-  { id: 'lounge-table', type: 'table', x: 580, y: 440, width: 140, height: 60, label: 'Coffee Table' },
-  // Product Whiteboard
-  { id: 'product-table', type: 'table', x: 120, y: 450, width: 160, height: 60, label: 'Design Island' }
-];
-
 // ====================================================
-// 1. GET /api/spatial/room — Office World Metadata
+// 1. GET /api/spatial/room — Office World Metadata & Obstacles from MongoDB
 // ====================================================
 router.get('/room', async (req, res) => {
   try {
-    let office = await OfficeSpace.findOne({ cluster: 'proxify' });
-    if (!office) {
-      office = await OfficeSpace.create({
-        name: 'ProxiSpeak Infotact Main Office',
-        cluster: 'proxify',
-        dimensions: { width: 900, height: 660 },
-        zones: DEFAULT_OFFICE_ZONES,
-        obstacles: DEFAULT_OBSTACLES,
-        spawnPoint: [450, 320]
-      });
-    }
+    const cluster = req.query.cluster || 'proxify';
+    const { office, source } = await OfficeSpace.getOfficeLayout(cluster);
+
+    const soundBlockingCount = (office.obstacles || []).filter(o => o.blocksSound).length;
 
     res.json({
       success: true,
+      source,
+      milestone: 'Room Persistence: Saved in MongoDB (proxify cluster)',
       office: {
         name: office.name,
+        cluster: office.cluster,
         dimensions: office.dimensions,
         zones: office.zones,
         obstacles: office.obstacles,
-        spawnPoint: office.spawnPoint
+        spawnPoint: office.spawnPoint,
+        metadata: {
+          totalObstacles: (office.obstacles || []).length,
+          soundBlockingCount,
+          soundPermittedCount: (office.obstacles || []).length - soundBlockingCount,
+          version: office.metadata?.version || 1
+        },
+        updatedAt: office.updatedAt
       }
     });
   } catch (err) {
-    res.json({
-      success: true,
-      office: {
-        name: 'ProxiSpeak Headquarters',
-        dimensions: { width: 900, height: 660 },
-        zones: DEFAULT_OFFICE_ZONES,
-        obstacles: DEFAULT_OBSTACLES,
-        spawnPoint: [450, 320]
-      }
+    console.error('Error fetching office layout:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch office space layout.',
+      error: err.message
     });
   }
 });
 
 // ====================================================
-// 2. GET /api/spatial/nearby — High-Performance Geospatial Proximity Query (< 20ms)
+// 2. POST & PUT /api/spatial/room — Save Office Layout & Obstacles to MongoDB
+// ====================================================
+const handleSaveRoom = async (req, res) => {
+  try {
+    const cluster = req.body.cluster || req.query.cluster || 'proxify';
+    const { name, dimensions, zones, obstacles, spawnPoint } = req.body;
+
+    if (obstacles && !Array.isArray(obstacles)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payload: obstacles must be an array.'
+      });
+    }
+
+    const result = await OfficeSpace.saveOfficeLayout(cluster, {
+      name,
+      dimensions,
+      zones,
+      obstacles,
+      spawnPoint
+    });
+
+    const soundBlockingCount = (result.office.obstacles || []).filter(o => o.blocksSound).length;
+
+    res.json({
+      success: true,
+      message: 'Office layout and sound-blocking furniture obstacles saved into MongoDB successfully.',
+      source: result.source,
+      office: result.office,
+      stats: {
+        totalObstacles: (result.office.obstacles || []).length,
+        soundBlockingObstacles: soundBlockingCount,
+        openFurnitureObstacles: (result.office.obstacles || []).length - soundBlockingCount
+      }
+    });
+  } catch (err) {
+    console.error('Error saving office layout to MongoDB:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to persist office layout into MongoDB.',
+      error: err.message
+    });
+  }
+};
+
+router.post('/room', handleSaveRoom);
+router.put('/room', handleSaveRoom);
+
+// ====================================================
+// 3. POST /api/spatial/room/obstacle — Add New Furniture Obstacle to MongoDB
+// ====================================================
+router.post('/room/obstacle', async (req, res) => {
+  try {
+    const cluster = req.body.cluster || 'proxify';
+    const newObstacle = req.body.obstacle || req.body;
+
+    if (!newObstacle.label || typeof newObstacle.x !== 'number' || typeof newObstacle.y !== 'number') {
+      return res.status(400).json({
+        success: false,
+        message: 'Obstacle requires label, x, y, width, and height.'
+      });
+    }
+
+    const { office } = await OfficeSpace.getOfficeLayout(cluster);
+    const obstacles = office.obstacles || [];
+
+    const preparedObstacle = {
+      id: newObstacle.id || `obs_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`,
+      label: newObstacle.label,
+      type: newObstacle.type || 'desk',
+      x: Number(newObstacle.x),
+      y: Number(newObstacle.y),
+      width: Number(newObstacle.width) || 120,
+      height: Number(newObstacle.height) || 60,
+      color: newObstacle.color || (newObstacle.blocksSound ? '#312e81' : '#1e293b'),
+      blocksSound: Boolean(newObstacle.blocksSound),
+      soundReduction: typeof newObstacle.soundReduction === 'number' ? newObstacle.soundReduction : (newObstacle.blocksSound ? 1.0 : 0.0),
+      soundReductionDb: typeof newObstacle.soundReductionDb === 'number' ? newObstacle.soundReductionDb : (newObstacle.blocksSound ? 45 : 0),
+      material: newObstacle.material || (newObstacle.blocksSound ? 'acoustic-foam' : 'wood-steel')
+    };
+
+    obstacles.push(preparedObstacle);
+    const saveResult = await OfficeSpace.saveOfficeLayout(cluster, { ...office, obstacles });
+
+    res.json({
+      success: true,
+      message: `Obstacle '${preparedObstacle.label}' added and persisted into MongoDB.`,
+      obstacle: preparedObstacle,
+      totalObstacles: saveResult.office.obstacles.length,
+      source: saveResult.source
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to add obstacle to MongoDB.', error: err.message });
+  }
+});
+
+// ====================================================
+// 4. PUT /api/spatial/room/obstacle/:id — Update Obstacle (Toggle blocksSound) in MongoDB
+// ====================================================
+router.put('/room/obstacle/:id', async (req, res) => {
+  try {
+    const obstacleId = req.params.id;
+    const cluster = req.body.cluster || 'proxify';
+    const updates = req.body;
+
+    const { office } = await OfficeSpace.getOfficeLayout(cluster);
+    const obstacles = office.obstacles || [];
+
+    const index = obstacles.findIndex(o => o.id === obstacleId);
+    if (index === -1) {
+      return res.status(404).json({ success: false, message: `Obstacle with id '${obstacleId}' not found.` });
+    }
+
+    // Merge updates
+    const existing = obstacles[index];
+    const updatedObs = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      blocksSound: updates.blocksSound !== undefined ? Boolean(updates.blocksSound) : existing.blocksSound,
+      color: updates.color || (updates.blocksSound ? '#312e81' : existing.color)
+    };
+
+    obstacles[index] = updatedObs;
+    const saveResult = await OfficeSpace.saveOfficeLayout(cluster, { ...office, obstacles });
+
+    res.json({
+      success: true,
+      message: `Obstacle '${updatedObs.label}' updated in MongoDB. blocksSound = ${updatedObs.blocksSound}`,
+      obstacle: updatedObs,
+      source: saveResult.source
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to update obstacle in MongoDB.', error: err.message });
+  }
+});
+
+// ====================================================
+// 5. DELETE /api/spatial/room/obstacle/:id — Delete Obstacle from MongoDB
+// ====================================================
+router.delete('/room/obstacle/:id', async (req, res) => {
+  try {
+    const obstacleId = req.params.id;
+    const cluster = req.query.cluster || 'proxify';
+
+    const { office } = await OfficeSpace.getOfficeLayout(cluster);
+    const currentObstacles = office.obstacles || [];
+    const remaining = currentObstacles.filter(o => o.id !== obstacleId);
+
+    if (currentObstacles.length === remaining.length) {
+      return res.status(404).json({ success: false, message: `Obstacle with id '${obstacleId}' not found.` });
+    }
+
+    const saveResult = await OfficeSpace.saveOfficeLayout(cluster, { ...office, obstacles: remaining });
+
+    res.json({
+      success: true,
+      message: `Obstacle '${obstacleId}' deleted from MongoDB.`,
+      remainingCount: remaining.length,
+      source: saveResult.source
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to delete obstacle.', error: err.message });
+  }
+});
+
+// ====================================================
+// 6. POST /api/spatial/room/reset — Reset Office Layout to Defaults in MongoDB
+// ====================================================
+router.post('/room/reset', async (req, res) => {
+  try {
+    const cluster = req.body.cluster || 'proxify';
+    const result = await OfficeSpace.resetToDefault(cluster);
+
+    res.json({
+      success: true,
+      message: 'Office layout and sound-blocking obstacles reset to defaults in MongoDB.',
+      source: result.source,
+      office: result.office
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to reset office layout.', error: err.message });
+  }
+});
+
+// ====================================================
+// 7. POST /api/spatial/verify-audio-path — WebRTC Distance & Sound-Blocking Raycast
+// ====================================================
+router.post('/verify-audio-path', async (req, res) => {
+  try {
+    const { fromCoords, toCoords, maxRadius = 100, cluster = 'proxify' } = req.body;
+
+    if (!fromCoords || !toCoords || !Array.isArray(fromCoords) || !Array.isArray(toCoords)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide fromCoords [x, y] and toCoords [x, y].'
+      });
+    }
+
+    // 1. Distance check
+    const dx = fromCoords[0] - toCoords[0];
+    const dy = fromCoords[1] - toCoords[1];
+    const distance = Math.round(Math.sqrt(dx * dx + dy * dy));
+    const inRange = distance <= maxRadius;
+
+    // 2. Fetch obstacles from MongoDB layout
+    const { office } = await OfficeSpace.getOfficeLayout(cluster);
+    const obstacles = office.obstacles || [];
+
+    // 3. Line-of-sight sound occlusion test against obstacles with blocksSound: true
+    const occlusion = checkSoundOcclusion(fromCoords, toCoords, obstacles);
+
+    const baseGain = inRange ? Math.max(10, Math.min(100, Math.round((1 - distance / maxRadius) * 100))) : 0;
+    const effectiveGain = (inRange && !occlusion.isBlocked) ? baseGain : 0;
+    const audioPermitted = inRange && !occlusion.isBlocked;
+
+    res.json({
+      success: true,
+      fromCoords,
+      toCoords,
+      distance,
+      maxRadius,
+      inRange,
+      isSoundBlocked: occlusion.isBlocked,
+      blockingObstacle: occlusion.blockingObstacle ? {
+        id: occlusion.blockingObstacle.id,
+        label: occlusion.blockingObstacle.label,
+        type: occlusion.blockingObstacle.type,
+        hitPoint: occlusion.blockingObstacle.hitPoint
+      } : null,
+      blockReason: occlusion.isBlocked ? `Sound wave blocked by '${occlusion.blockingObstacle?.label}'` : 'Clear line-of-sight',
+      baseGain,
+      effectiveGain,
+      webrtcOfferPermitted: audioPermitted,
+      status: audioPermitted ? 'PERMITTED' : (occlusion.isBlocked ? 'BLOCKED_BY_OBSTACLE' : 'OUT_OF_RANGE')
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: 'Failed to verify audio path.', error: err.message });
+  }
+});
+
+// ====================================================
+// 8. GET /api/spatial/nearby — High-Performance Geospatial Proximity Query (< 20ms)
 // ====================================================
 router.get('/nearby', async (req, res) => {
   const startTime = process.hrtime.bigint();
@@ -135,7 +325,7 @@ router.get('/nearby', async (req, res) => {
 });
 
 // ====================================================
-// 3. GET /api/spatial/groups — Group Users Using Iterative Audio Pod Clustering (< 20ms)
+// 9. GET /api/spatial/groups — Group Users Using Iterative Audio Pod Clustering (< 20ms)
 // ====================================================
 router.get('/groups', async (req, res) => {
   const startTime = process.hrtime.bigint();
@@ -168,11 +358,11 @@ router.get('/groups', async (req, res) => {
 });
 
 // ====================================================
-// 4. POST /api/spatial/verify-proximity — WebRTC Proximity Gatekeeper
+// 10. POST /api/spatial/verify-proximity — WebRTC Proximity Gatekeeper
 // ====================================================
 router.post('/verify-proximity', async (req, res) => {
   try {
-    const { fromCoords, toCoords, maxRadius = 100 } = req.body;
+    const { fromCoords, toCoords, maxRadius = 100, checkOcclusion = false } = req.body;
 
     if (!fromCoords || !toCoords || !Array.isArray(fromCoords) || !Array.isArray(toCoords)) {
       return res.status(400).json({
@@ -185,7 +375,22 @@ router.post('/verify-proximity', async (req, res) => {
     const dy = fromCoords[1] - toCoords[1];
     const distance = Math.round(Math.sqrt(dx * dx + dy * dy));
     const inRange = distance <= maxRadius;
-    const gain = inRange ? Math.max(10, Math.min(100, Math.round((1 - distance / maxRadius) * 100))) : 0;
+
+    let isSoundBlocked = false;
+    let blockingObstacle = null;
+
+    if (checkOcclusion) {
+      const { office } = await OfficeSpace.getOfficeLayout();
+      const occlusion = checkSoundOcclusion(fromCoords, toCoords, office.obstacles || []);
+      isSoundBlocked = occlusion.isBlocked;
+      blockingObstacle = occlusion.blockingObstacle;
+    }
+
+    const gain = inRange && !isSoundBlocked
+      ? Math.max(10, Math.min(100, Math.round((1 - distance / maxRadius) * 100)))
+      : 0;
+
+    const permitted = inRange && !isSoundBlocked;
 
     res.json({
       success: true,
@@ -194,9 +399,11 @@ router.post('/verify-proximity', async (req, res) => {
       distance,
       maxRadius,
       inRange,
+      isSoundBlocked,
+      blockingObstacle: blockingObstacle?.label || null,
       gain,
-      webrtcOfferPermitted: inRange,
-      status: inRange ? 'ALLOWED' : 'BLOCKED'
+      webrtcOfferPermitted: permitted,
+      status: permitted ? 'ALLOWED' : (isSoundBlocked ? 'BLOCKED_BY_SOUNDPROOF_OBSTACLE' : 'OUT_OF_RANGE')
     });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to verify proximity.' });
@@ -204,7 +411,7 @@ router.post('/verify-proximity', async (req, res) => {
 });
 
 // ====================================================
-// 5. GET /api/spatial/audit — Mid-Project Review Spatial Audit Engine (< 20ms Verification)
+// 11. GET /api/spatial/audit — Mid-Project Review Spatial Audit Engine (< 20ms Verification)
 // ====================================================
 router.get('/audit', (req, res) => {
   try {
@@ -226,7 +433,7 @@ router.get('/audit', (req, res) => {
 });
 
 // ====================================================
-// 6. POST /api/spatial/audit/custom — Custom Scalability Stress Audit
+// 12. POST /api/spatial/audit/custom — Custom Scalability Stress Audit
 // ====================================================
 router.post('/audit/custom', (req, res) => {
   try {
