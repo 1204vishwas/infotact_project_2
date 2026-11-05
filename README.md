@@ -72,7 +72,13 @@ Traditional remote collaboration tools (such as Zoom, Microsoft Teams, and Googl
    - `user-joined` & `user-left`: Manages arrivals and departures cleanly.
    - Periodic database update queue updates MongoDB without choking frame rates.
    - WebRTC signaling relays (`webrtc-offer`, `webrtc-answer`, `webrtc-ice-candidate`) prepared for Week 2 audio peer handshakes.
-2. **MongoDB Geospatial Schemas (`backend/models/`):**
+2. **Acoustic Occlusion Engine (`backend/services/acoustics.js` + `frontend/src/utils/acoustics.js`):**
+    - **Line-of-sight acoustic model:** Given any two avatar coordinates, `findSoundBlockers(from, to, obstacles)` checks whether the straight segment between them crosses a piece of furniture marked `blocksSound: true`. Intersection uses Liang-Barsky segment/rectangle clipping (`segmentIntersectsRect`), so partial corner crossings are detected exactly rather than by sampled approximation.
+    - **Occlusion attenuation (`occlusionFactor`):** Each blocker contributes its `acousticTransmission` (default `0.35`, clamped to `[0, 1]`), compounded multiplicatively and floored at `MIN_TRANSMISSION = 0.08`, so a voice behind a wall is muffled but never fully silenced by occlusion alone. Combined with distance, `effectiveGain = max(4, round(distanceGain * occlusion))` inside the hearing radius, and `0` outside it.
+    - **Active-layout cache:** Obstacles come from the persisted `officespaces` document (`cluster: "proxify"`, `isActive: true`) and are cached for `5000ms` (`CACHE_TTL_MS`), because proximity checks run several times per second per moving avatar and must never hit MongoDB on every position frame. `invalidateOfficeCache()` resets the cache whenever the layout is updated. If MongoDB is unavailable, the built-in `DEFAULT_OFFICE_OBSTACLES` from `backend/realtime/officeDefaults.js` is used as a safe fallback.
+    - **Edge cases handled:** avatars standing on/inside their own furniture are not muffled by that furniture; obstacles with non-positive width/height are ignored; a blocker list of zero yields `occlusion = 1` (no attenuation).
+    - **Public API:** `computeAcousticState(from, to, options)` returns `{ distance, radius, inRange, distanceGain, occlusion, effectiveGain, occluded, blockers }`, so server routes, the audit tooling, and the client can reuse the same decision. The frontend mirror in `frontend/src/utils/acoustics.js` lets the Canvas attenuate a voice the instant its line of sight crosses persisted furniture without waiting for a network round-trip, keeping rendering consistent even when the server response is delayed.
+3. **MongoDB Geospatial Schemas (`backend/models/`):**
    - **`User.js`:**
      - Flat 2D Cartesian plane indexing (`location: [X, Y]`, `min: -1000, max: 10000`).
      - Static helper `User.findNearby(x, y, maxDistance)` executing native MongoDB **`$near`** proximity queries.
