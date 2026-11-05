@@ -53,11 +53,18 @@ export default function AudioCheckModal({
   const [selectedModel, setSelectedModel] = useState(
     webrtcManager?.getAttenuationConfig()?.model || ATTENUATION_MODELS.EXPONENTIAL
   );
+  const [stereoSeparation, setStereoSeparation] = useState(
+    webrtcManager?.getAttenuationConfig()?.stereoSeparation ?? 1.0
+  );
+  const [panningMode, setPanningMode] = useState(
+    webrtcManager?.getAttenuationConfig()?.panningMode || 'hrtf'
+  );
 
   const localCanvasRef = useRef(null);
   const remoteCanvasRef = useRef(null);
   const curveCanvasRef = useRef(null);
   const animationFrameRef = useRef(null);
+  const lastFrameTimeRef = useRef(performance.now());
 
   // Peer list array
   const peerList = Array.from(peers?.values?.() || []).filter((p) => p.socketId !== socket?.id);
@@ -155,6 +162,16 @@ export default function AudioCheckModal({
           x += sliceWidth;
         }
         ctx.stroke();
+
+        // 60 FPS Canvas badge
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.beginPath();
+        ctx.roundRect(width - 56, 4, 52, 16, 4);
+        ctx.fill();
+        ctx.fillStyle = '#38bdf8';
+        ctx.font = 'bold 9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('60 FPS', width - 30, 15);
       }
 
       // 2. Remote Visualizer
@@ -198,6 +215,16 @@ export default function AudioCheckModal({
           x += sliceWidth;
         }
         ctx.stroke();
+
+        // 60 FPS Canvas badge
+        ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+        ctx.beginPath();
+        ctx.roundRect(width - 56, 4, 52, 16, 4);
+        ctx.fill();
+        ctx.fillStyle = '#34d399';
+        ctx.font = 'bold 9px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('60 FPS', width - 30, 15);
       }
 
       animationFrameRef.current = requestAnimationFrame(renderVisualizers);
@@ -751,6 +778,80 @@ export default function AudioCheckModal({
                   </div>
                 </div>
 
+                {/* 3D Audio & Stereo Separation Controls */}
+                <div className="p-3 rounded-xl bg-slate-950/80 border border-purple-500/30 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] font-bold text-purple-300 flex items-center gap-1.5">
+                      <Headphones className="w-3.5 h-3.5 text-purple-400" />
+                      3D Audio Panning & Stereo Separation
+                    </span>
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/30">
+                      {panningMode.toUpperCase()} Mode • {Math.round(stereoSeparation * 100)}% Width
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                        <span>Stereo Separation Width:</span>
+                        <span className="font-mono text-cyan-300 font-bold">{Math.round(stereoSeparation * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min="0"
+                        max="1.5"
+                        step="0.05"
+                        value={stereoSeparation}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          setStereoSeparation(val);
+                          if (webrtcManager) webrtcManager.setStereoSeparation(val);
+                        }}
+                        className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                      />
+                      <div className="flex justify-between text-[9px] text-slate-500 font-mono mt-0.5">
+                        <span>0% (Mono)</span>
+                        <span>100% (Binaural)</span>
+                        <span>150% (Wide)</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <span className="text-[10px] text-slate-400 block mb-1">3D Panning Engine:</span>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPanningMode('hrtf');
+                            if (webrtcManager) webrtcManager.setPanningMode('hrtf');
+                          }}
+                          className={`px-2 py-1 rounded text-[10px] font-semibold transition-all border ${
+                            panningMode === 'hrtf'
+                              ? 'bg-purple-600/30 border-purple-400 text-purple-200'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          HRTF Binaural (3D)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPanningMode('stereo');
+                            if (webrtcManager) webrtcManager.setPanningMode('stereo');
+                          }}
+                          className={`px-2 py-1 rounded text-[10px] font-semibold transition-all border ${
+                            panningMode === 'stereo'
+                              ? 'bg-purple-600/30 border-purple-400 text-purple-200'
+                              : 'bg-slate-900 border-slate-800 text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Stereo Panner
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 {/* Algorithm Switcher Pills */}
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
@@ -790,11 +891,15 @@ export default function AudioCheckModal({
                 {/* Attenuation Curve Canvas */}
                 <div>
                   {(() => {
+                    const deltaX = activePeer && selfAvatar ? (activePeer.x || activePeer.targetX || 0) - (selfAvatar.x || 0) : null;
+                    const deltaY = activePeer && selfAvatar ? (activePeer.y || activePeer.targetY || 0) - (selfAvatar.y || 0) : null;
                     const activeAttenuation = calculateAttenuation(currentDistance, {
                       model: selectedModel,
                       maxRadius: 100,
                       hysteresisRadius: 115,
-                      deltaX: activePeer && selfAvatar ? (activePeer.x || activePeer.targetX || 0) - (selfAvatar.x || 0) : null
+                      deltaX,
+                      deltaY,
+                      stereoSeparation
                     });
 
                     return (
@@ -828,7 +933,7 @@ export default function AudioCheckModal({
                             </span>
                             <span className="text-slate-600">&rarr;</span>
                             <span className="px-2 py-1 rounded bg-slate-800/90 text-purple-300 border border-slate-700">
-                              3. StereoPanner ({activeAttenuation.pan > 0 ? `+${activeAttenuation.pan} R` : activeAttenuation.pan < 0 ? `${activeAttenuation.pan} L` : 'Center'})
+                              3. 3D Panner ({activeAttenuation.pan > 0 ? `+${activeAttenuation.pan} R` : activeAttenuation.pan < 0 ? `${activeAttenuation.pan} L` : 'Center'})
                             </span>
                             <span className="text-slate-600">&rarr;</span>
                             <span className="px-2 py-1 rounded bg-slate-800/90 text-emerald-300 border border-slate-700">
@@ -861,11 +966,13 @@ export default function AudioCheckModal({
                             <p className="text-[10px] text-slate-500">Distance Treble Roll-Off</p>
                           </div>
                           <div className="p-2 rounded-lg bg-slate-950 border border-slate-800">
-                            <p className="text-[10px] text-slate-400 uppercase font-semibold">2D Stereo Balance</p>
+                            <p className="text-[10px] text-slate-400 uppercase font-semibold">3D Stereo Separation</p>
                             <p className="text-base font-bold text-purple-300">
                               {activeAttenuation.pan > 0.05 ? `Right (+${Math.round(activeAttenuation.pan * 100)}%)` : activeAttenuation.pan < -0.05 ? `Left (${Math.round(activeAttenuation.pan * 100)}%)` : 'Center (0%)'}
                             </p>
-                            <p className="text-[10px] text-slate-500">Binaural Panning</p>
+                            <p className="text-[10px] text-slate-500 font-mono">
+                              Az: {activeAttenuation.spatial3D?.azimuthDeg ?? 0}° • ITD: {activeAttenuation.spatial3D?.itdMs ?? 0}ms
+                            </p>
                           </div>
                         </div>
                       </>

@@ -66,7 +66,11 @@ export const DEFAULT_ATTENUATION_CONFIG = {
   filterCeilingHz: 20000, // Close-up full fidelity frequency
   filterFloorHz: 900,     // Distant muffled frequency
   filterExponent: 1.6,    // Rate of high-frequency loss
-  panMaxRadius: 100       // Maximum pixel offset for full ±1.0 stereo separation
+  panMaxRadius: 100,      // Maximum pixel offset for full ±1.0 stereo separation
+  enable3DAudio: true,    // 3D Spatial Audio Panning with Stereo Separation
+  panningMode: 'hrtf',    // 'hrtf' | 'stereo' (Web Audio 3D HRTF vs StereoPanner 3D)
+  stereoSeparation: 1.0,  // Stereo separation factor (1.0 = 100% separation, 0 = mono, 1.5 = wide)
+  minSeparationRadius: 12 // Smooth sweet-spot center transition
 };
 
 /**
@@ -192,19 +196,106 @@ export function calculateFilterCutoff(distance, options = {}) {
 }
 
 /**
- * Binaural 2D Spatial Stereo Panning
- * Computes stereo pan value between -1.0 (full left) and +1.0 (full right).
+ * Binaural 3D Spatial Audio Panning & Stereo Separation
+ * Computes:
+ * - 3D Stereo Pan [-1.0 (full left) to +1.0 (full right)]
+ * - Azimuth angle in degrees [-180° to +180°] (0° = front, +90° = right, -90° = left, 180° = behind)
+ * - Elevation angle in degrees [-90° to +90°]
+ * - Interaural Time Difference (ITD in milliseconds)
+ * - Interaural Level Difference (ILD in decibels)
+ * - Rear pinna spectral attenuation factor (head shadow when source is behind)
  */
-export function calculateStereoPan(deltaX, panMaxRadius = 100) {
+export function calculate3DStereoPan(deltaX, deltaY = 0, deltaZ = 0, options = {}) {
+  const {
+    panMaxRadius = 100,
+    stereoSeparation = 1.0, // 0.0 = mono, 1.0 = standard stereo separation, 1.5 = wide separation
+    minSeparationRadius = 12,
+    rearAttenuationDb = 3.0 // 3dB subtle high-frequency dampening for rear sounds
+  } = options;
+
+  if (typeof deltaX !== 'number' || isNaN(deltaX)) {
+    return {
+      pan: 0.0,
+      azimuthDeg: 0,
+      elevationDeg: 0,
+      itdMs: 0,
+      ildDb: 0,
+      rearOcclusionFactor: 1.0,
+      distance3D: 0,
+      stereoSeparation
+    };
+  }
+
+  const dX = deltaX;
+  const dY = typeof deltaY === 'number' && !isNaN(deltaY) ? deltaY : 0;
+  const dZ = typeof deltaZ === 'number' && !isNaN(deltaZ) ? deltaZ : 0;
+
+  const horizontalDist = Math.hypot(dX, dY);
+  const distance3D = Math.hypot(dX, dY, dZ);
+
+  // Azimuth angle relative to listener facing forward (negative Y in 2D top-down coordinates):
+  // Facing direction is (0, -1) -> 0 radians.
+  // deltaX > 0 is to the right (+90° / +PI/2)
+  // deltaX < 0 is to the left (-90° / -PI/2)
+  // deltaY > 0 is behind listener (+180° / PI)
+  const azimuthRad = Math.atan2(dX, -dY);
+  const azimuthDeg = Math.round((azimuthRad * 180) / Math.PI);
+
+  // Elevation angle relative to the horizontal plane:
+  const elevationRad = Math.atan2(dZ, Math.max(1, horizontalDist));
+  const elevationDeg = Math.round((elevationRad * 180) / Math.PI);
+
+  // Binaural stereo separation pan [-1.0, +1.0]
+  // In physical acoustics, stereo separation is proportional to sin(azimuth):
+  let rawPan = Math.sin(azimuthRad) * stereoSeparation;
+
+  // Near-field sweet spot cushioning: smoothly taper pan when listener is right on top of peer (< minSeparationRadius)
+  const taper = horizontalDist < minSeparationRadius ? Math.max(0, horizontalDist / minSeparationRadius) : 1.0;
+  const pan = Math.min(1.0, Math.max(-1.0, Number((rawPan * taper).toFixed(3))));
+
+  // Interaural Time Difference (Woodworth-Schlosberg model approximation):
+  // ITD_max ≈ 0.65ms for average human head radius (~8.75 cm)
+  const itdMs = Number((0.65 * Math.sin(Math.abs(azimuthRad))).toFixed(3));
+
+  // Interaural Level Difference (ILD): up to 6.5 dB difference at 90° azimuth
+  const ildDb = Number((6.5 * Math.abs(pan)).toFixed(1));
+
+  // Rear head shadow occlusion factor (1.0 = in front, 0.85 = directly behind)
+  const isBehind = dY > 0;
+  const rearOcclusionFactor = isBehind ? Math.max(0.82, 1.0 - (dY / Math.max(1, panMaxRadius)) * 0.18) : 1.0;
+
+  return {
+    pan,
+    azimuthDeg,
+    elevationDeg,
+    itdMs,
+    ildDb,
+    rearOcclusionFactor: Number(rearOcclusionFactor.toFixed(3)),
+    distance3D: Math.round(distance3D),
+    stereoSeparation
+  };
+}
+
+/**
+ * Binaural 2D/3D Spatial Stereo Panning
+ * Computes stereo pan value between -1.0 (full left) and +1.0 (full right).
+ * Maintains backward compatibility with calculateStereoPan(deltaX, panMaxRadius).
+ * When deltaY is provided, evaluates full 3D stereo separation geometry.
+ */
+export function calculateStereoPan(deltaX, panMaxRadius = 100, deltaY = null, stereoSeparation = 1.0) {
   if (typeof deltaX !== 'number' || isNaN(deltaX)) return 0.0;
-  const maxPan = Math.max(10, panMaxRadius);
-  const pan = deltaX / maxPan;
-  return Math.min(1.0, Math.max(-1.0, Number(pan.toFixed(3))));
+  if (deltaY === null || deltaY === undefined) {
+    const maxPan = Math.max(10, panMaxRadius);
+    const pan = deltaX / maxPan;
+    return Math.min(1.0, Math.max(-1.0, Number(pan.toFixed(3))));
+  }
+  const result = calculate3DStereoPan(deltaX, deltaY, 0, { panMaxRadius, stereoSeparation });
+  return result.pan;
 }
 
 /**
  * MASTER ATTENUATION CALCULATOR
- * Evaluates volume gain, lowpass filter cutoff, stereo pan, and decibels for any given pixel distance.
+ * Evaluates volume gain, lowpass filter cutoff, 3D stereo pan, and decibels for any given pixel distance.
  */
 export function calculateAttenuation(distance, customConfig = {}) {
   const config = { ...DEFAULT_ATTENUATION_CONFIG, ...customConfig };
@@ -215,12 +306,22 @@ export function calculateAttenuation(distance, customConfig = {}) {
     hysteresisRadius = 115,
     minGain = 0.05,
     deltaX = null,
+    deltaY = null,
+    deltaZ = 0,
     panMaxRadius = 100,
+    stereoSeparation = 1.0,
     isCulled = false
   } = config;
 
   // Handle edge cases
   const validDist = Math.max(0, typeof distance === 'number' && !isNaN(distance) ? distance : Infinity);
+
+  // Compute 3D stereo spatial separation
+  const spatial3D = deltaX !== null
+    ? calculate3DStereoPan(deltaX, deltaY, deltaZ, { panMaxRadius, stereoSeparation })
+    : { pan: 0.0, azimuthDeg: 0, elevationDeg: 0, itdMs: 0, ildDb: 0, rearOcclusionFactor: 1.0, stereoSeparation };
+
+  const pan = deltaX !== null ? spatial3D.pan : 0.0;
 
   if (isCulled || validDist >= hysteresisRadius) {
     return {
@@ -228,7 +329,8 @@ export function calculateAttenuation(distance, customConfig = {}) {
       gainPercent: 0,
       decibels: -Infinity,
       filterFreq: config.filterFloorHz || 900,
-      pan: deltaX !== null ? calculateStereoPan(deltaX, panMaxRadius) : 0.0,
+      pan,
+      spatial3D,
       isAudible: false,
       inHysteresis: false,
       isCulled: !!isCulled,
@@ -268,13 +370,13 @@ export function calculateAttenuation(distance, customConfig = {}) {
 
   finalGain = Math.min(1.0, Math.max(0.0, finalGain));
 
-  // 3. Low-pass filter frequency
-  const filterFreq = calculateFilterCutoff(validDist, config);
+  // 3. Low-pass filter frequency with 3D pinna rear shadow factor
+  let filterFreq = calculateFilterCutoff(validDist, config);
+  if (spatial3D.rearOcclusionFactor < 1.0) {
+    filterFreq = Math.round(Math.max(config.filterFloorHz || 900, filterFreq * spatial3D.rearOcclusionFactor));
+  }
 
-  // 4. Stereo pan
-  const pan = deltaX !== null ? calculateStereoPan(deltaX, panMaxRadius) : 0.0;
-
-  // 5. Decibel conversion (20 * log10(gain))
+  // 4. Decibel conversion (20 * log10(gain))
   const decibels = finalGain > 0.00001 ? Number((20 * Math.log10(finalGain)).toFixed(1)) : -60.0;
 
   return {
@@ -283,6 +385,7 @@ export function calculateAttenuation(distance, customConfig = {}) {
     decibels,
     filterFreq,
     pan,
+    spatial3D,
     isAudible: finalGain > 0.001,
     inHysteresis,
     isCulled: false,

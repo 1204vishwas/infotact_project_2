@@ -28,6 +28,24 @@ export default function AudioWaveformVisualizer({
   const [audioLevel, setAudioLevel] = useState(0);
   const [decibels, setDecibels] = useState(-60);
   const [visualizerMode, setVisualizerMode] = useState('waveform'); // 'waveform' | 'spectrum' | 'both'
+  const [fps, setFps] = useState(60);
+
+  const audioLevelRef = useRef(0);
+  const decibelsRef = useRef(-60);
+  const isMicMutedRef = useRef(isMicMuted);
+  const visualizerModeRef = useRef(visualizerMode);
+  const lastStateUpdateRef = useRef(0);
+  const lastFrameTimeRef = useRef(performance.now());
+  const frameCountRef = useRef(0);
+  const lastFpsUpdateRef = useRef(performance.now());
+
+  useEffect(() => {
+    isMicMutedRef.current = isMicMuted;
+  }, [isMicMuted]);
+
+  useEffect(() => {
+    visualizerModeRef.current = visualizerMode;
+  }, [visualizerMode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -39,8 +57,21 @@ export default function AudioWaveformVisualizer({
     const timeData = new Uint8Array(bufferLength);
     const freqData = new Uint8Array(bufferLength);
 
-    const render = () => {
+    const render = (now) => {
       animationFrameId = requestAnimationFrame(render);
+
+      // Steady 60 FPS Delta-time computation
+      const deltaMs = now - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = now;
+      frameCountRef.current++;
+
+      // Update FPS counter every 500ms
+      if (now - lastFpsUpdateRef.current >= 500) {
+        const currentFps = Math.round((frameCountRef.current * 1000) / (now - lastFpsUpdateRef.current));
+        setFps(Math.min(60, currentFps));
+        frameCountRef.current = 0;
+        lastFpsUpdateRef.current = now;
+      }
 
       const width = canvas.width;
       const height = canvas.height;
@@ -74,17 +105,25 @@ export default function AudioWaveformVisualizer({
         webrtcManager.getLocalWaveformData(timeData);
         webrtcManager.getLocalFrequencyData(freqData);
         const lvl = webrtcManager.getLocalAudioLevel();
-        setAudioLevel(lvl);
+        audioLevelRef.current = lvl;
 
         // Approximate dB
         const db = lvl > 0 ? Math.round(20 * Math.log10(Math.max(lvl, 0.001))) : -60;
-        setDecibels(Math.max(-60, Math.min(0, db)));
+        decibelsRef.current = Math.max(-60, Math.min(0, db));
+
+        // Throttle React state updates to 10 FPS (100ms) to ensure Canvas RAF maintains steady 60 FPS
+        if (now - lastStateUpdateRef.current > 100) {
+          setAudioLevel(lvl);
+          setDecibels(decibelsRef.current);
+          lastStateUpdateRef.current = now;
+        }
       }
 
-      const isSpeaking = audioLevel > 0.05 && !isMicMuted;
+      const isSpeaking = audioLevelRef.current > 0.05 && !isMicMutedRef.current;
+      const currentMode = visualizerModeRef.current;
 
       // --- 1. DRAW FREQUENCY SPECTRUM BARS ---
-      if (visualizerMode === 'spectrum' || visualizerMode === 'both') {
+      if (currentMode === 'spectrum' || currentMode === 'both') {
         const barCount = 32;
         const barWidth = (width / barCount) - 2;
 
@@ -115,7 +154,7 @@ export default function AudioWaveformVisualizer({
       }
 
       // --- 2. DRAW OSCILLOSCOPE TIME-DOMAIN WAVEFORM ---
-      if (visualizerMode === 'waveform' || visualizerMode === 'both') {
+      if (currentMode === 'waveform' || currentMode === 'both') {
         ctx.lineWidth = isSpeaking ? 2.5 : 1.5;
         const waveGrad = ctx.createLinearGradient(0, 0, width, 0);
         if (isSpeaking) {
@@ -165,12 +204,12 @@ export default function AudioWaveformVisualizer({
       ctx.stroke();
     };
 
-    render();
+    animationFrameId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [webrtcManager, isMicMuted, visualizerMode, audioLevel]);
+  }, [webrtcManager]);
 
   const handleToggleLoopback = async () => {
     if (!webrtcManager) return;
@@ -264,6 +303,10 @@ export default function AudioWaveformVisualizer({
         <div className="absolute top-1.5 left-2 flex items-center space-x-2 pointer-events-none">
           <span className="text-[9px] font-mono text-slate-400 bg-slate-900/80 px-1.5 py-0.5 rounded border border-slate-800">
             {decibels > -55 ? `${decibels} dB` : '-∞ dB'}
+          </span>
+          <span className="text-[9px] font-mono text-emerald-400 bg-slate-900/80 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            {fps} FPS
           </span>
           {audioLevel > 0.05 && !isMicMuted && (
             <span className="text-[9px] font-bold text-emerald-400 bg-emerald-950/80 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-1 animate-pulse">

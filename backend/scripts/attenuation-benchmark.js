@@ -20,7 +20,8 @@ const {
   calculateSmoothstepGain,
   calculateLogarithmicGain,
   calculateFilterCutoff,
-  calculateStereoPan
+  calculateStereoPan,
+  calculate3DStereoPan
 } = require('../services/attenuationService');
 
 function runAttenuationBenchmark() {
@@ -123,9 +124,9 @@ function runAttenuationBenchmark() {
   assert(freq100 === 900, `100px distance hits acoustic floor of 900 Hz (muffled distant sound)`);
 
   // ---------------------------------------------------------------------------
-  // TEST 5: BINAURAL 2D STEREO PANNING
+  // TEST 5: BINAURAL 2D & 3D STEREO PANNING WITH STEREO SEPARATION
   // ---------------------------------------------------------------------------
-  console.log('\n--- TEST SUITE 5: BINAURAL 2D STEREO PANNING ---');
+  console.log('\n--- TEST SUITE 5: BINAURAL 2D & 3D STEREO PANNING ---');
 
   const panLeft = calculateStereoPan(-100, 100);
   const panMidLeft = calculateStereoPan(-50, 100);
@@ -138,6 +139,41 @@ function runAttenuationBenchmark() {
   assert(panCenter === 0.0, `0px offset yields center pan (0.0)`);
   assert(panMidRight === 0.5, `+50px horizontal offset yields +0.5 pan`);
   assert(panRight === 1.0, `+100px horizontal offset yields full right pan (+1.0)`);
+
+  // --- 3D Audio Spatial Azimuth & Stereo Separation Tests ---
+  console.log('\n--- TEST SUITE 5B: 3D SPATIAL AUDIO AZIMUTH & STEREO SEPARATION ---');
+
+  // Directly in front (0 deg)
+  const front3D = calculate3DStereoPan(0, -60, 0);
+  assert(front3D.azimuthDeg === 0, `Directly in front: Azimuth is 0°`);
+  assert(front3D.pan === 0.0, `Directly in front: Stereo pan is dead center (0.0)`);
+  assert(front3D.rearOcclusionFactor === 1.0, `Directly in front: Full acoustic clarity (no rear shadow)`);
+
+  // Directly to the right (+90 deg)
+  const right3D = calculate3DStereoPan(60, 0, 0);
+  assert(right3D.azimuthDeg === 90, `Directly to the right: Azimuth is +90°`);
+  assert(right3D.pan === 1.0, `Directly to the right: Full right stereo separation (+1.0)`);
+  assert(right3D.itdMs > 0.6, `Directly to the right: Realistic ITD interaural time delay (~${right3D.itdMs}ms)`);
+  assert(right3D.ildDb > 5.5, `Directly to the right: Realistic ILD interaural level difference (~${right3D.ildDb}dB)`);
+
+  // Directly to the left (-90 deg)
+  const left3D = calculate3DStereoPan(-60, 0, 0);
+  assert(left3D.azimuthDeg === -90, `Directly to the left: Azimuth is -90°`);
+  assert(left3D.pan === -1.0, `Directly to the left: Full left stereo separation (-1.0)`);
+
+  // Directly behind (+180 deg)
+  const behind3D = calculate3DStereoPan(0, 60, 0);
+  assert(Math.abs(behind3D.azimuthDeg) === 180, `Directly behind: Azimuth is 180°`);
+  assert(behind3D.pan === 0.0, `Directly behind: Stereo pan is centered (0.0)`);
+  assert(behind3D.rearOcclusionFactor < 1.0, `Directly behind: Pinna acoustic rear shadow applied (${behind3D.rearOcclusionFactor})`);
+
+  // Configurable stereo separation factor (0.0 mono vs 0.5 narrow vs 1.0 full)
+  const monoPan = calculate3DStereoPan(60, 0, 0, { stereoSeparation: 0.0 });
+  const halfPan = calculate3DStereoPan(60, 0, 0, { stereoSeparation: 0.5 });
+  const fullPan = calculate3DStereoPan(60, 0, 0, { stereoSeparation: 1.0 });
+  assert(monoPan.pan === 0.0, `Stereo separation factor 0.0 forces mono center (0.0)`);
+  assert(halfPan.pan === 0.5, `Stereo separation factor 0.5 scales pan to +0.5`);
+  assert(fullPan.pan === 1.0, `Stereo separation factor 1.0 scales pan to +1.0`);
 
   // ---------------------------------------------------------------------------
   // TEST 6: HIGH-THROUGHPUT REAL-TIME PERFORMANCE BENCHMARK

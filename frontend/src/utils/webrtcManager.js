@@ -494,15 +494,28 @@ export class WebRTCAudioManager {
       sourceNode: null,
       filterNode: null,
       pannerNode: null,
+      panner3DNode: null,
       gainNode: null,
       analyser: null,
       connectionState: 'new',
       distance: 50,
+      deltaX: 0,
+      deltaY: 0,
+      deltaZ: 0,
       gain: 1.0,
       gainPercent: 100,
       decibels: 0,
       filterFreq: 20000,
       pan: 0,
+      spatial3D: {
+        pan: 0,
+        azimuthDeg: 0,
+        elevationDeg: 0,
+        itdMs: 0,
+        ildDb: 0,
+        rearOcclusionFactor: 1.0,
+        stereoSeparation: 1.0
+      },
       isAudible: true,
       inHysteresis: false,
       isCulled: false,
@@ -556,6 +569,9 @@ export class WebRTCAudioManager {
         if (peerData.pannerNode) {
           try { peerData.pannerNode.disconnect(); } catch (e) {}
         }
+        if (peerData.panner3DNode) {
+          try { peerData.panner3DNode.disconnect(); } catch (e) {}
+        }
         if (peerData.gainNode) {
           try { peerData.gainNode.disconnect(); } catch (e) {}
         }
@@ -572,7 +588,30 @@ export class WebRTCAudioManager {
         filterNode.frequency.setValueAtTime(initialFilterFreq, audioCtx.currentTime);
         filterNode.Q.setValueAtTime(0.707, audioCtx.currentTime);
 
-        // Stereo panner for 2D spatial positioning
+        // 1. Web Audio API 3D PannerNode (HRTF Binaural 3D Spatial Audio)
+        let panner3DNode = null;
+        if (typeof audioCtx.createPanner === 'function') {
+          try {
+            panner3DNode = audioCtx.createPanner();
+            panner3DNode.panningModel = 'HRTF'; // Head-Related Transfer Function for realistic 3D binaural audio
+            panner3DNode.distanceModel = 'none'; // Custom mathematical attenuation via GainNode
+            const scale = 0.02; // 50px = 1 meter in audio space
+            const initialX = (peerData.deltaX || 0) * scale;
+            const initialY = (peerData.deltaY || 0) * scale;
+            const initialZ = (peerData.deltaZ || 0) * scale;
+            if (panner3DNode.positionX) {
+              panner3DNode.positionX.setValueAtTime(initialX, audioCtx.currentTime);
+              panner3DNode.positionY.setValueAtTime(initialY, audioCtx.currentTime);
+              panner3DNode.positionZ.setValueAtTime(initialZ, audioCtx.currentTime);
+            } else if (typeof panner3DNode.setPosition === 'function') {
+              panner3DNode.setPosition(initialX, initialY, initialZ);
+            }
+          } catch (err) {
+            console.warn('[WebRTC Audio] 3D PannerNode initialization notice:', err);
+          }
+        }
+
+        // 2. Web Audio API StereoPannerNode (Direct Left/Right Stereo Separation & Interaural Panning)
         let pannerNode = null;
         if (typeof audioCtx.createStereoPanner === 'function') {
           pannerNode = audioCtx.createStereoPanner();
@@ -590,14 +629,22 @@ export class WebRTCAudioManager {
         analyser.fftSize = 64;
         analyser.smoothingTimeConstant = 0.6;
 
-        // Connect the Web Audio chain
+        // Connect the Web Audio 3D spatial chain:
+        // source -> filterNode -> panner3DNode (HRTF) -> pannerNode (Stereo Separation) -> gainNode -> analyser -> destination
+        let lastNode = filterNode;
         sourceNode.connect(filterNode);
-        if (pannerNode) {
-          filterNode.connect(pannerNode);
-          pannerNode.connect(gainNode);
-        } else {
-          filterNode.connect(gainNode);
+
+        if (panner3DNode && this.attenuationConfig.enable3DAudio) {
+          lastNode.connect(panner3DNode);
+          lastNode = panner3DNode;
         }
+
+        if (pannerNode) {
+          lastNode.connect(pannerNode);
+          lastNode = pannerNode;
+        }
+
+        lastNode.connect(gainNode);
         gainNode.connect(analyser);
 
         // Output directly to browser audio destination (speakers/headphones)
@@ -605,11 +652,12 @@ export class WebRTCAudioManager {
 
         peerData.sourceNode = sourceNode;
         peerData.filterNode = filterNode;
+        peerData.panner3DNode = panner3DNode;
         peerData.pannerNode = pannerNode;
         peerData.gainNode = gainNode;
         peerData.analyser = analyser;
 
-        console.log(`[WebRTC Audio] Successfully hooked WebRTC track for peer '${peerSocketId}' into Web Audio API.`);
+        console.log(`[WebRTC Audio] Successfully hooked WebRTC track for peer '${peerSocketId}' into 3D Web Audio API (HRTF + Stereo Separation).`);
 
         // Re-apply current distance attenuation parameters
         if (peerData.distance !== undefined) {
@@ -758,22 +806,95 @@ export class WebRTCAudioManager {
   }
 
   /**
+   * Update 3D Audio Listener coordinates & orientation in Web Audio API
+   * Maps 2D/3D canvas coordinates to standard Web Audio listener space
+   */
+  setListenerPosition(x, y, z = 0, forwardX = 0, forwardY = -1, forwardZ = 0) {
+    try {
+      const audioCtx = this.getAudioContext();
+      if (!audioCtx || !audioCtx.listener) return;
+      const now = audioCtx.currentTime;
+      const listener = audioCtx.listener;
+
+      // Coordinate scaling (e.g. 50px = 1 meter in real-world acoustics)
+      const scale = 0.02;
+      const posX = (x - 480) * scale;
+      const posY = (y - 320) * scale;
+      const posZ = z * scale;
+
+      if (listener.positionX) {
+        listener.positionX.setTargetAtTime(posX, now, 0.035);
+        listener.positionY.setTargetAtTime(posY, now, 0.035);
+        listener.positionZ.setTargetAtTime(posZ, now, 0.035);
+        if (listener.forwardX) {
+          listener.forwardX.setTargetAtTime(forwardX, now, 0.035);
+          listener.forwardY.setTargetAtTime(forwardY, now, 0.035);
+          listener.forwardZ.setTargetAtTime(forwardZ, now, 0.035);
+          listener.upX.setTargetAtTime(0, now, 0.035);
+          listener.upY.setTargetAtTime(0, now, 0.035);
+          listener.upZ.setTargetAtTime(1, now, 0.035);
+        }
+      } else if (typeof listener.setPosition === 'function') {
+        listener.setPosition(posX, posY, posZ);
+        if (typeof listener.setOrientation === 'function') {
+          listener.setOrientation(forwardX, forwardY, forwardZ, 0, 0, 1);
+        }
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * Set stereo separation factor (0.0 = mono, 1.0 = standard stereo separation, 1.5 = wide separation)
+   */
+  setStereoSeparation(factor) {
+    const val = Math.max(0.0, Math.min(2.0, typeof factor === 'number' ? factor : 1.0));
+    this.attenuationConfig.stereoSeparation = val;
+    this.recalculateAllPeerAttenuation();
+    return val;
+  }
+
+  /**
+   * Set 3D spatial panning mode ('hrtf' | 'stereo')
+   */
+  setPanningMode(mode) {
+    if (['hrtf', 'stereo', 'equalpower'].includes(mode)) {
+      this.attenuationConfig.panningMode = mode;
+      this.recalculateAllPeerAttenuation();
+      return true;
+    }
+    return false;
+  }
+
+  /**
    * Dynamically adjust remote peer audio volume based on Euclidean distance on canvas
    * Supports:
    * - Configurable attenuation models: Exponential (Psychoacoustic), Smoothstep S-Curve, Inverse Distance, Linear, and Logarithmic dB
    * - Acoustic high-frequency air absorption filter (low-pass cutoff frequency in Hz)
+   * - 3D Audio Panning with Web Audio API HRTF PannerNode
+   * - Full Binaural Stereo Separation with Azimuth angle, ITD & ILD calculation
    * - Click-free exponential parameter ramping via Web Audio API setTargetAtTime
    * - Hysteresis release cushion zone (100px - 115px soft cosine fade)
-   * - Binaural 2D spatial stereo panning via Web Audio StereoPannerNode
    * - Density culling state (muting culled peers to prevent CPU/audio saturation)
    */
-  setPeerDistance(peerSocketId, distance, maxRadius = 100, deltaX = null, isCulled = false, hysteresisRadius = 115, isSoundBlocked = false) {
+  setPeerDistance(
+    peerSocketId,
+    distance,
+    maxRadius = 100,
+    deltaX = null,
+    deltaY = null,
+    isCulled = false,
+    hysteresisRadius = 115,
+    isSoundBlocked = false,
+    deltaZ = 0
+  ) {
     const peerData = this.peers.get(peerSocketId);
     if (!peerData) return null;
 
     peerData.distance = distance;
     peerData.isCulled = !!isCulled;
     peerData.deltaX = deltaX;
+    peerData.deltaY = deltaY;
+    peerData.deltaZ = deltaZ;
     peerData.isSoundBlocked = !!isSoundBlocked;
 
     // Calculate dynamic attenuation using the configured mathematical model
@@ -784,6 +905,8 @@ export class WebRTCAudioManager {
       maxRadius,
       hysteresisRadius,
       deltaX,
+      deltaY,
+      deltaZ,
       isCulled: effectiveCulled
     });
 
@@ -792,6 +915,7 @@ export class WebRTCAudioManager {
     peerData.decibels = attenuation.decibels;
     peerData.filterFreq = attenuation.filterFreq;
     peerData.pan = attenuation.pan;
+    peerData.spatial3D = attenuation.spatial3D || peerData.spatial3D;
     peerData.isAudible = attenuation.isAudible;
     peerData.inHysteresis = attenuation.inHysteresis;
     peerData.model = attenuation.model;
@@ -809,7 +933,7 @@ export class WebRTCAudioManager {
         } catch (e) {}
       }
 
-      // 2. Smoothly update acoustic low-pass air absorption filter
+      // 2. Smoothly update acoustic low-pass air absorption filter (with 3D rear pinna shadow)
       if (peerData.filterNode) {
         try {
           peerData.filterNode.frequency.cancelScheduledValues(now);
@@ -817,7 +941,28 @@ export class WebRTCAudioManager {
         } catch (e) {}
       }
 
-      // 3. Smoothly update binaural stereo pan
+      // 3. Smoothly update 3D PannerNode position (HRTF Binaural 3D Audio)
+      if (peerData.panner3DNode && deltaX !== null) {
+        try {
+          const scale = 0.02;
+          const px = deltaX * scale;
+          const py = (deltaY || 0) * scale;
+          const pz = (deltaZ || 0) * scale;
+
+          if (peerData.panner3DNode.positionX) {
+            peerData.panner3DNode.positionX.cancelScheduledValues(now);
+            peerData.panner3DNode.positionY.cancelScheduledValues(now);
+            peerData.panner3DNode.positionZ.cancelScheduledValues(now);
+            peerData.panner3DNode.positionX.setTargetAtTime(px, now, timeConstant);
+            peerData.panner3DNode.positionY.setTargetAtTime(py, now, timeConstant);
+            peerData.panner3DNode.positionZ.setTargetAtTime(pz, now, timeConstant);
+          } else if (typeof peerData.panner3DNode.setPosition === 'function') {
+            peerData.panner3DNode.setPosition(px, py, pz);
+          }
+        } catch (e) {}
+      }
+
+      // 4. Smoothly update binaural stereo separation pan (-1.0 left to +1.0 right)
       if (peerData.pannerNode && attenuation.pan !== null) {
         try {
           peerData.pannerNode.pan.cancelScheduledValues(now);
@@ -923,6 +1068,9 @@ export class WebRTCAudioManager {
         decibels: peerData.decibels !== undefined ? peerData.decibels : -60,
         filterFreq: peerData.filterFreq || 20000,
         pan: peerData.pan !== undefined ? peerData.pan : 0,
+        spatial3D: peerData.spatial3D || null,
+        stereoSeparation: this.attenuationConfig.stereoSeparation || 1.0,
+        panningMode: this.attenuationConfig.panningMode || 'hrtf',
         model: peerData.model || this.attenuationConfig.model,
         isAudible: peerData.isAudible !== undefined ? peerData.isAudible : (peerData.gain > 0),
         inHysteresis: !!peerData.inHysteresis,
@@ -959,6 +1107,9 @@ export class WebRTCAudioManager {
     }
     if (peerData.pannerNode) {
       try { peerData.pannerNode.disconnect(); } catch (e) {}
+    }
+    if (peerData.panner3DNode) {
+      try { peerData.panner3DNode.disconnect(); } catch (e) {}
     }
     if (peerData.gainNode) {
       try { peerData.gainNode.disconnect(); } catch (e) {}

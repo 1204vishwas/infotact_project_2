@@ -1,15 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Volume2, VolumeX, Radio, Navigation, Compass, Sparkles, Activity } from 'lucide-react';
+import { Volume2, VolumeX, Radio, Navigation, Compass, Sparkles, Activity, Headphones } from 'lucide-react';
+import { calculate3DStereoPan } from '../utils/audioAttenuation';
 
 export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', previewName = 'Your Avatar' }) {
   const canvasRef = useRef(null);
   const [distance, setDistance] = useState(85);
   const [audioGain, setAudioGain] = useState(78);
   const [isWithinEarshot, setIsWithinEarshot] = useState(true);
+  const [stereoPan, setStereoPan] = useState(0.5);
+  const [azimuth, setAzimuth] = useState(45);
+  const [fps, setFps] = useState(60);
   const [userCoord, setUserCoord] = useState({ x: 190, y: 150 });
   const [peerCoord] = useState({ x: 260, y: 180 });
 
   const EARSHOT_RADIUS = 110; // Pixel threshold from specs
+
+  const lastFrameTimeRef = useRef(performance.now());
+  const lastStateUpdateRef = useRef(0);
+  const frameCountRef = useRef(0);
+  const lastFpsUpdateRef = useRef(performance.now());
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -19,8 +28,25 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
 
     let time = 0;
 
-    const render = () => {
-      time += 0.03;
+    const render = (now) => {
+      animationFrameId = requestAnimationFrame(render);
+
+      // Delta-time 60 FPS regulation
+      const deltaMs = now - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = now;
+      const dt = Math.min(deltaMs / 1000, 0.1);
+      const timeScale = dt * 60; // 1.0 at 60 FPS
+      time += 0.03 * timeScale;
+      frameCountRef.current++;
+
+      // Compute FPS every 500ms
+      if (now - lastFpsUpdateRef.current >= 500) {
+        const curFps = Math.round((frameCountRef.current * 1000) / (now - lastFpsUpdateRef.current));
+        setFps(Math.min(60, curFps));
+        frameCountRef.current = 0;
+        lastFpsUpdateRef.current = now;
+      }
+
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
       // 1. Draw subtle office grid floor
@@ -44,14 +70,18 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       const currentX = userCoord.x + Math.sin(time) * 12;
       const currentY = userCoord.y + Math.cos(time * 0.8) * 10;
 
-      // Calculate distance between user and peer
+      // Calculate distance & 3D stereo separation
       const dx = peerCoord.x - currentX;
       const dy = peerCoord.y - currentY;
-      const currentDist = Math.round(Math.sqrt(dx * dx + dy * dy));
-      setDistance(currentDist);
+      const currentDist = Math.round(Math.hypot(dx, dy));
 
       const inEarshot = currentDist <= EARSHOT_RADIUS;
-      setIsWithinEarshot(inEarshot);
+
+      // Calculate 3D Spatial Audio & Stereo Separation
+      const spatial3D = calculate3DStereoPan(dx, dy, 0, {
+        panMaxRadius: EARSHOT_RADIUS,
+        stereoSeparation: 1.0
+      });
 
       // Calculate dynamic Web Audio API gain attenuation
       let calculatedGain = 0;
@@ -59,7 +89,16 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
         calculatedGain = Math.round((1 - currentDist / EARSHOT_RADIUS) * 100);
         calculatedGain = Math.max(15, Math.min(100, calculatedGain));
       }
-      setAudioGain(calculatedGain);
+
+      // Throttle React state updates to 10 FPS (100ms) to ensure Canvas RAF renders at steady 60 FPS
+      if (now - lastStateUpdateRef.current > 100) {
+        setDistance(currentDist);
+        setIsWithinEarshot(inEarshot);
+        setAudioGain(calculatedGain);
+        setStereoPan(spatial3D.pan);
+        setAzimuth(spatial3D.azimuthDeg);
+        lastStateUpdateRef.current = now;
+      }
 
       // 2. Draw Earshot Radius Circle for User Avatar
       const pulseSize = 4 * Math.sin(time * 2);
@@ -75,7 +114,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       ctx.fillStyle = inEarshot ? 'rgba(99, 102, 241, 0.08)' : 'rgba(100, 116, 139, 0.03)';
       ctx.fill();
 
-      // 3. Draw Audio Connection Line if in Earshot
+      // 3. Draw Audio Connection Line with 3D Stereo Separation Gradient
       if (inEarshot) {
         ctx.beginPath();
         ctx.moveTo(currentX, currentY);
@@ -86,7 +125,7 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
         ctx.stroke();
         ctx.setLineDash([]);
 
-        // Sound waves radiating between peers
+        // Sound waves radiating between peers with spatial stereo offset
         const midX = (currentX + peerCoord.x) / 2;
         const midY = (currentY + peerCoord.y) / 2;
         ctx.beginPath();
@@ -123,11 +162,9 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
       ctx.fillStyle = '#f8fafc';
       ctx.font = 'bold 11px "Plus Jakarta Sans", sans-serif';
       ctx.fillText(previewName.split(' ')[0] || 'You', currentX, currentY + 30);
-
-      animationFrameId = requestAnimationFrame(render);
     };
 
-    render();
+    animationFrameId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
@@ -162,23 +199,32 @@ export default function ProximityRadarPreview({ previewAvatarColor = '#6366f1', 
           className="w-full h-auto block"
         />
 
-        {/* Live coordinate overlay */}
-        <div className="absolute top-2 left-2 text-[10px] font-mono text-slate-400 bg-slate-900/90 px-2 py-1 rounded border border-slate-800 flex items-center space-x-1.5 backdrop-blur-sm">
-          <Navigation className="w-3 h-3 text-indigo-400" />
-          <span>Coordinates: [{Math.round(userCoord.x)}, {Math.round(userCoord.y)}]</span>
+        {/* Live coordinate & 60 FPS overlay */}
+        <div className="absolute top-2 left-2 flex items-center gap-1.5 pointer-events-none">
+          <div className="text-[10px] font-mono text-slate-400 bg-slate-900/90 px-2 py-1 rounded border border-slate-800 flex items-center space-x-1.5 backdrop-blur-sm">
+            <Navigation className="w-3 h-3 text-indigo-400" />
+            <span>Coords: [{Math.round(userCoord.x)}, {Math.round(userCoord.y)}]</span>
+          </div>
+          <div className="text-[10px] font-mono text-emerald-400 bg-slate-900/90 px-2 py-1 rounded border border-emerald-500/30 flex items-center space-x-1 backdrop-blur-sm">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+            <span>{fps} FPS</span>
+          </div>
         </div>
 
-        {/* Live Audio Gain Indicator */}
+        {/* Live 3D Audio & Stereo Separation Indicator */}
         <div className="absolute bottom-2 right-2 flex items-center space-x-2 bg-slate-900/95 px-2.5 py-1.5 rounded-lg border border-slate-800 backdrop-blur-sm">
           {isWithinEarshot ? (
             <>
-              <Volume2 className="w-3.5 h-3.5 text-emerald-400 animate-bounce" />
+              <Headphones className="w-3.5 h-3.5 text-cyan-400 animate-bounce" />
               <div className="flex flex-col">
-                <span className="text-[10px] text-emerald-400 font-semibold leading-none">
-                  Earshot Active ({distance}px)
+                <span className="text-[10px] text-emerald-400 font-semibold leading-none flex items-center gap-1">
+                  <span>Earshot ({distance}px)</span>
+                  <span className="text-[9px] text-cyan-300 font-mono">
+                    {stereoPan > 0 ? `+${stereoPan} R` : stereoPan < 0 ? `${stereoPan} L` : 'Center'}
+                  </span>
                 </span>
                 <span className="text-[9px] text-slate-400 font-mono">
-                  Audio Gain: {audioGain}%
+                  Gain: {audioGain}% • Az: {azimuth}°
                 </span>
               </div>
             </>

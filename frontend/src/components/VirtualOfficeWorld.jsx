@@ -40,6 +40,7 @@ import SpatialAuditModal from './SpatialAuditModal';
 import AudioCheckModal from './AudioCheckModal';
 import RoomLayoutModal from './RoomLayoutModal';
 import MySQLStatusModal from './MySQLStatusModal';
+import Spatial3DAudioModal from './Spatial3DAudioModal';
 
 // Default Office Obstacles with Sound-Blocking Barriers
 const DEFAULT_OBSTACLES = [
@@ -208,15 +209,59 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   const [peerConnectionStates, setPeerConnectionStates] = useState({});
   const [botAudioActive, setBotAudioActive] = useState(false);
 
+  // 3D Spatial Audio & Stereo Separation controls
+  const [stereoSeparation, setStereoSeparation] = useState(1.0); // 0.0 (Mono) to 1.5 (Wide)
+  const [panningMode, setPanningMode] = useState('hrtf'); // 'hrtf' (binaural 3D) | 'stereo'
+  const [isSpatial3DModalOpen, setIsSpatial3DModalOpen] = useState(false);
+
+  // 60 FPS Performance telemetry state
+  const [fpsMetric, setFpsMetric] = useState({ fps: 60, frameTime: 16.6, jitter: 0.1 });
+
   // Audio simulation oscillator for bot test
   const botOscillatorRef = useRef(null);
 
-  // Refs for animation loop & physics to avoid stale closures
+  // Refs for animation loop, 60 FPS regulation & audio to avoid stale closures
   const posRef = useRef({ x: 480, y: 320, vx: 0, vy: 0, targetX: null, targetY: null });
   const keysRef = useRef({ w: false, a: false, s: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowDown: false, ArrowRight: false });
   const peersRef = useRef(new Map()); // socketId -> { name, role, avatarColor, x, y, targetX, targetY, micMuted, isBot }
   const lastEmitTime = useRef(0);
   const reticleRef = useRef(null); // click target visual ripple { x, y, opacity, size }
+
+  // 60 FPS steady timing refs & offscreen canvas
+  const bgCanvasRef = useRef(null);
+  const lastFrameTimeRef = useRef(performance.now());
+  const fpsRef = useRef({ fps: 60, frameTime: 16.6, count: 0, lastCheck: performance.now() });
+  const lastUiThrottleRef = useRef(0);
+  const peersInEarshotRef = useRef([]);
+
+  // Reactive state refs to eliminate loop teardowns
+  const micMutedRef = useRef(false);
+  const isMicActiveRef = useRef(false);
+  const botAudioActiveRef = useRef(false);
+  const earshotRadiusRef = useRef(100);
+  const peerConnectionStatesRef = useRef({});
+  const userRef = useRef(user);
+  const stereoSeparationRef = useRef(1.0);
+  const panningModeRef = useRef('hrtf');
+
+  useEffect(() => { micMutedRef.current = micMuted; }, [micMuted]);
+  useEffect(() => { isMicActiveRef.current = isMicActive; }, [isMicActive]);
+  useEffect(() => { botAudioActiveRef.current = botAudioActive; }, [botAudioActive]);
+  useEffect(() => { earshotRadiusRef.current = earshotRadius; }, [earshotRadius]);
+  useEffect(() => { peerConnectionStatesRef.current = peerConnectionStates; }, [peerConnectionStates]);
+  useEffect(() => { userRef.current = user; }, [user]);
+  useEffect(() => {
+    stereoSeparationRef.current = stereoSeparation;
+    if (webrtcManagerRef.current) {
+      webrtcManagerRef.current.setStereoSeparation(stereoSeparation);
+    }
+  }, [stereoSeparation]);
+  useEffect(() => {
+    panningModeRef.current = panningMode;
+    if (webrtcManagerRef.current) {
+      webrtcManagerRef.current.setPanningMode(panningMode);
+    }
+  }, [panningMode]);
 
   // Office World Zones
   const zones = [
@@ -608,10 +653,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       }
 
       if (webrtcManagerRef.current) {
-        const myX = avatarPos.current ? avatarPos.current.x : coords.x;
+        const myX = posRef.current.x;
+        const myY = posRef.current.y;
         const peerX = peer.location ? peer.location[0] : (peer.x || 0);
+        const peerY = peer.location ? peer.location[1] : (peer.y || 0);
         const deltaX = peerX - myX;
-        webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, maxRadius, deltaX, isCulled, 115);
+        const deltaY = peerY - myY;
+        webrtcManagerRef.current.setListenerPosition(myX, myY, 0);
+        webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, maxRadius, deltaX, deltaY, isCulled, 115);
 
         // Initialize RTCPeerConnection for both caller & callee to ensure readiness for ICE & tracks
         webrtcManagerRef.current.createPeerConnection(peer.socketId, {
@@ -646,10 +695,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     socket.on('proximity-distance-update', ({ peerSocketId, distance, gain, isCulled }) => {
       if (webrtcManagerRef.current) {
         const peerAvatar = peersRef.current.get(peerSocketId);
-        const myX = avatarPos.current ? avatarPos.current.x : coords.x;
+        const myX = posRef.current.x;
+        const myY = posRef.current.y;
         const peerX = peerAvatar ? (peerAvatar.x || peerAvatar.location?.[0] || 0) : 0;
+        const peerY = peerAvatar ? (peerAvatar.y || peerAvatar.location?.[1] || 0) : 0;
         const deltaX = peerX - myX;
-        webrtcManagerRef.current.setPeerDistance(peerSocketId, distance, 100, deltaX, isCulled, 115);
+        const deltaY = peerY - myY;
+        webrtcManagerRef.current.setListenerPosition(myX, myY, 0);
+        webrtcManagerRef.current.setPeerDistance(peerSocketId, distance, 100, deltaX, deltaY, isCulled, 115);
       }
     });
 
@@ -1002,7 +1055,72 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
   };
 
   // ====================================================
-  // 7. HIGH-PERFORMANCE 60 FPS CANVAS RENDERING LOOP
+  // 7. PRE-RENDER STATIC WORLD BACKGROUND (OFFSCREEN CANVAS)
+  // ====================================================
+  useEffect(() => {
+    const bgCanvas = document.createElement('canvas');
+    bgCanvas.width = WORLD_WIDTH;
+    bgCanvas.height = WORLD_HEIGHT;
+    const bgCtx = bgCanvas.getContext('2d');
+
+    // 1. Office floor
+    bgCtx.fillStyle = '#0a0f1d';
+    bgCtx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
+
+    // 2. High-performance static grid lines
+    bgCtx.strokeStyle = '#131b2e';
+    bgCtx.lineWidth = 1;
+    const gridSize = 40;
+    bgCtx.beginPath();
+    for (let x = 0; x < WORLD_WIDTH; x += gridSize) {
+      bgCtx.moveTo(x, 0);
+      bgCtx.lineTo(x, WORLD_HEIGHT);
+    }
+    for (let y = 0; y < WORLD_HEIGHT; y += gridSize) {
+      bgCtx.moveTo(0, y);
+      bgCtx.lineTo(WORLD_WIDTH, y);
+    }
+    bgCtx.stroke();
+
+    // 3. Office zones
+    zones.forEach((z) => {
+      bgCtx.fillStyle = z.bg;
+      bgCtx.fillRect(z.x, z.y, z.width, z.height);
+
+      bgCtx.strokeStyle = z.border;
+      bgCtx.lineWidth = 1.5;
+      bgCtx.setLineDash([6, 6]);
+      bgCtx.strokeRect(z.x, z.y, z.width, z.height);
+      bgCtx.setLineDash([]);
+
+      // Zone header tag
+      bgCtx.fillStyle = z.tagColor;
+      bgCtx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
+      bgCtx.textAlign = 'left';
+      bgCtx.fillText(`${z.icon} ${z.name.toUpperCase()}`, z.x + 14, z.y + 24);
+    });
+
+    // 4. Central conference circle
+    const centerX = WORLD_WIDTH / 2;
+    const centerY = WORLD_HEIGHT / 2;
+    bgCtx.beginPath();
+    bgCtx.arc(centerX, centerY, 48, 0, Math.PI * 2);
+    bgCtx.fillStyle = 'rgba(30, 41, 59, 0.6)';
+    bgCtx.fill();
+    bgCtx.strokeStyle = 'rgba(99, 102, 241, 0.4)';
+    bgCtx.lineWidth = 2;
+    bgCtx.stroke();
+
+    bgCtx.fillStyle = '#94a3b8';
+    bgCtx.font = '10px "Plus Jakarta Sans", sans-serif';
+    bgCtx.textAlign = 'center';
+    bgCtx.fillText('Main Round Table', centerX, centerY + 4);
+
+    bgCanvasRef.current = bgCanvas;
+  }, []);
+
+  // ====================================================
+  // 8. STEADY 60 FPS CANVAS RENDERING & 3D AUDIO LOOP
   // ====================================================
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1011,66 +1129,39 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
     let animationFrameId;
     let time = 0;
 
-    const render = () => {
-      time += 0.03;
+    const render = (now) => {
+      animationFrameId = requestAnimationFrame(render);
+
+      // Delta-time normalization: guarantees locked 60 FPS physics regardless of monitor refresh rate
+      const deltaMs = now - lastFrameTimeRef.current;
+      lastFrameTimeRef.current = now;
+      const dt = Math.min(deltaMs / 1000, 0.1);
+      const timeScale = dt * 60; // 1.0 at 60 FPS
+      time += 0.03 * timeScale;
+
+      // Real-time FPS & frame jitter telemetry
+      fpsRef.current.count++;
+      if (now - fpsRef.current.lastCheck >= 500) {
+        const elapsed = (now - fpsRef.current.lastCheck) / 1000;
+        const curFps = Math.round(fpsRef.current.count / elapsed);
+        const frameTime = Number(deltaMs.toFixed(1));
+        const jitter = Number(Math.abs(frameTime - 16.6).toFixed(1));
+        setFpsMetric({ fps: Math.min(60, curFps), frameTime, jitter });
+        fpsRef.current.count = 0;
+        fpsRef.current.lastCheck = now;
+      }
+
       ctx.clearRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
 
-      // --- A. DRAW OFFICE FLOOR & GRID ---
-      ctx.fillStyle = '#0a0f1d';
-      ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
-
-      // Grid lines
-      ctx.strokeStyle = '#131b2e';
-      ctx.lineWidth = 1;
-      const gridSize = 40;
-      for (let x = 0; x < WORLD_WIDTH; x += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, WORLD_HEIGHT);
-        ctx.stroke();
-      }
-      for (let y = 0; y < WORLD_HEIGHT; y += gridSize) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(WORLD_WIDTH, y);
-        ctx.stroke();
+      // --- A. FAST DRAW PRE-RENDERED BACKGROUND ---
+      if (bgCanvasRef.current) {
+        ctx.drawImage(bgCanvasRef.current, 0, 0);
+      } else {
+        ctx.fillStyle = '#0a0f1d';
+        ctx.fillRect(0, 0, WORLD_WIDTH, WORLD_HEIGHT);
       }
 
-      // --- B. DRAW OFFICE ZONES ---
-      zones.forEach((z) => {
-        ctx.fillStyle = z.bg;
-        ctx.fillRect(z.x, z.y, z.width, z.height);
-
-        ctx.strokeStyle = z.border;
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([6, 6]);
-        ctx.strokeRect(z.x, z.y, z.width, z.height);
-        ctx.setLineDash([]);
-
-        // Zone header tag
-        ctx.fillStyle = z.tagColor;
-        ctx.font = 'bold 12px "Plus Jakarta Sans", sans-serif';
-        ctx.textAlign = 'left';
-        ctx.fillText(`${z.icon} ${z.name.toUpperCase()}`, z.x + 14, z.y + 24);
-      });
-
-      // --- C. DRAW CENTRAL CONFERENCE CIRCLE ---
-      const centerX = WORLD_WIDTH / 2;
-      const centerY = WORLD_HEIGHT / 2;
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, 48, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(30, 41, 59, 0.6)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(99, 102, 241, 0.4)';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '10px "Plus Jakarta Sans", sans-serif';
-      ctx.textAlign = 'center';
-      ctx.fillText('Main Round Table', centerX, centerY + 4);
-
-      // --- D. DRAW DESKS & OBSTACLES (INCLUDING SOUNDPROOF WALLS & BOOTHS) ---
+      // --- B. DRAW DESKS & OBSTACLES (INCLUDING SOUNDPROOF WALLS & BOOTHS) ---
       obstaclesRef.current.forEach((obs) => {
         // Shadow
         ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
@@ -1089,12 +1180,12 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
           ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
           ctx.lineWidth = 2;
           const stripeStep = 12;
+          ctx.beginPath();
           for (let sx = obs.x - obs.height; sx < obs.x + obs.width; sx += stripeStep) {
-            ctx.beginPath();
             ctx.moveTo(sx, obs.y + obs.height);
             ctx.lineTo(sx + obs.height, obs.y);
-            ctx.stroke();
           }
+          ctx.stroke();
           ctx.restore();
 
           // Acoustic barrier glowing border
@@ -1128,7 +1219,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         }
       });
 
-      // --- E. UPDATE LOCAL AVATAR PHYSICS ---
+      // --- C. UPDATE LOCAL AVATAR PHYSICS (DELTA-TIME SCALED) ---
       const pos = posRef.current;
       const keys = keysRef.current;
       const ACCELERATION = 0.85;
@@ -1151,7 +1242,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       if (pos.targetX !== null && pos.targetY !== null && ax === 0 && ay === 0) {
         const dx = pos.targetX - pos.x;
         const dy = pos.targetY - pos.y;
-        const distToTarget = Math.sqrt(dx * dx + dy * dy);
+        const distToTarget = Math.hypot(dx, dy);
 
         if (distToTarget > 4) {
           ax = dx / distToTarget;
@@ -1163,10 +1254,10 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         }
       }
 
-      pos.vx = (pos.vx + ax * ACCELERATION) * FRICTION;
-      pos.vy = (pos.vy + ay * ACCELERATION) * FRICTION;
+      pos.vx = (pos.vx + ax * ACCELERATION * timeScale) * Math.pow(FRICTION, timeScale);
+      pos.vy = (pos.vy + ay * ACCELERATION * timeScale) * Math.pow(FRICTION, timeScale);
 
-      const speed = Math.sqrt(pos.vx * pos.vx + pos.vy * pos.vy);
+      const speed = Math.hypot(pos.vx, pos.vy);
       if (speed > MAX_SPEED) {
         pos.vx = (pos.vx / speed) * MAX_SPEED;
         pos.vy = (pos.vy / speed) * MAX_SPEED;
@@ -1184,7 +1275,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         const closestY = Math.max(obs.y, Math.min(nextY, obs.y + obs.height));
         const distX = nextX - closestX;
         const distY = nextY - closestY;
-        const dist = Math.sqrt(distX * distX + distY * distY);
+        const dist = Math.hypot(distX, distY);
 
         if (dist < AVATAR_RADIUS) {
           const overlap = AVATAR_RADIUS - dist;
@@ -1200,12 +1291,20 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       pos.x = nextX;
       pos.y = nextY;
 
-      setCoords({ x: Math.round(pos.x), y: Math.round(pos.y) });
-      setCurrentZone(getZoneAt(pos.x, pos.y));
+      // Throttle React state updates to 10 FPS (100ms) to ensure Canvas RAF maintains steady 60 FPS
+      if (now - lastUiThrottleRef.current > 100) {
+        setCoords({ x: Math.round(pos.x), y: Math.round(pos.y) });
+        setCurrentZone(getZoneAt(pos.x, pos.y));
+        lastUiThrottleRef.current = now;
+      }
+
+      // Update 3D Audio listener position in Web Audio API
+      if (webrtcManagerRef.current) {
+        webrtcManagerRef.current.setListenerPosition(pos.x, pos.y, 0);
+      }
 
       // Broadcast position update
       const isMoving = Math.abs(pos.vx) > 0.1 || Math.abs(pos.vy) > 0.1;
-      const now = performance.now();
       if ((isMoving || (pos.targetX === null && lastEmitTime.current !== 0)) && now - lastEmitTime.current > 35) {
         if (socketRef.current && socketRef.current.connected) {
           socketRef.current.emit('avatar-move', {
@@ -1220,8 +1319,8 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       // Draw mouse target ripple
       if (reticleRef.current) {
         const ret = reticleRef.current;
-        ret.radius += 0.5;
-        ret.opacity -= 0.025;
+        ret.radius += 0.5 * timeScale;
+        ret.opacity -= 0.025 * timeScale;
         if (ret.opacity > 0) {
           ctx.beginPath();
           ctx.arc(ret.x, ret.y, ret.radius, 0, Math.PI * 2);
@@ -1240,45 +1339,63 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
 
       // Fetch live audio levels
       const localAudioLevel = webrtcManagerRef.current?.getLocalAudioLevel() || 0;
-      const isLocalSpeaking = localAudioLevel > 0.05 && !micMuted;
+      const isLocalSpeaking = localAudioLevel > 0.05 && !micMutedRef.current;
 
-      // --- H. CALCULATE EARSHOT PROXIMITY & DRAW WEBRTC AUDIO BEAMS ---
+      // --- D. 3D SPATIAL AUDIO PANNING & WEBRTC STEREO SEPARATION BEAMS ---
       const activePeersInRadius = [];
       const peers = peersRef.current;
 
       peers.forEach((peer) => {
-        // Smooth lerp
-        peer.x += (peer.targetX - peer.x) * 0.22;
-        peer.y += (peer.targetY - peer.y) * 0.22;
+        // Delta-time independent smooth lerp
+        const lerpFactor = 1 - Math.pow(1 - 0.22, timeScale);
+        peer.x += (peer.targetX - peer.x) * lerpFactor;
+        peer.y += (peer.targetY - peer.y) * lerpFactor;
 
         const dx = peer.x - pos.x;
         const dy = peer.y - pos.y;
-        const distance = Math.sqrt(dx * dx + dy * dy);
+        const distance = Math.hypot(dx, dy);
 
         // Check line-of-sight sound occlusion against obstacles with blocksSound: true
         const occlusion = checkSoundOcclusion([pos.x, pos.y], [peer.x, peer.y], obstaclesRef.current);
         const isSoundBlocked = occlusion.isBlocked;
 
-        // Update WebRTC volume attenuation based on distance & sound blockage
+        // Update WebRTC 3D volume attenuation based on 3D distance, stereo separation, & sound blockage
         let attenuation = null;
         if (webrtcManagerRef.current) {
           if (!peer.isBot) {
-            attenuation = webrtcManagerRef.current.setPeerDistance(peer.socketId, distance, earshotRadius, dx, false, 115, isSoundBlocked);
+            attenuation = webrtcManagerRef.current.setPeerDistance(
+              peer.socketId,
+              distance,
+              earshotRadiusRef.current,
+              dx,
+              dy,
+              false,
+              115,
+              isSoundBlocked,
+              0
+            );
           } else {
-            attenuation = webrtcManagerRef.current.calculateAttenuation(distance, { maxRadius: earshotRadius, deltaX: dx, isCulled: isSoundBlocked });
+            attenuation = webrtcManagerRef.current.calculateAttenuation(distance, {
+              maxRadius: earshotRadiusRef.current,
+              deltaX: dx,
+              deltaY: dy,
+              deltaZ: 0,
+              isCulled: isSoundBlocked,
+              stereoSeparation: stereoSeparationRef.current
+            });
           }
         }
 
         // Adjust bot synthesizer gain dynamically based on distance & occlusion
         if (peer.isBot && botOscillatorRef.current) {
-          const botGain = attenuation && distance <= earshotRadius && !isSoundBlocked ? attenuation.gain * 0.08 : 0;
+          const botGain = attenuation && distance <= earshotRadiusRef.current && !isSoundBlocked ? attenuation.gain * 0.08 : 0;
           botOscillatorRef.current.gain.gain.setValueAtTime(botGain, webrtcManagerRef.current?.getAudioContext()?.currentTime || 0);
         }
 
-        if (distance <= earshotRadius) {
-          const baseGain = attenuation ? attenuation.gainPercent : Math.max(10, Math.min(100, Math.round((1 - distance / earshotRadius) * 100)));
+        if (distance <= earshotRadiusRef.current) {
+          const baseGain = attenuation ? attenuation.gainPercent : Math.max(10, Math.min(100, Math.round((1 - distance / earshotRadiusRef.current) * 100)));
           const effectiveGain = isSoundBlocked ? 0 : baseGain;
-          const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive && !isSoundBlocked ? 0.35 : 0);
+          const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActiveRef.current && !isSoundBlocked ? 0.35 : 0);
 
           activePeersInRadius.push({
             socketId: peer.socketId,
@@ -1291,9 +1408,10 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             decibels: isSoundBlocked ? -Infinity : attenuation?.decibels,
             filterFreq: attenuation?.filterFreq,
             pan: attenuation?.pan,
+            spatial3D: attenuation?.spatial3D,
             audioLevel: peerAudioLvl,
             isSpeaking: peerAudioLvl > 0.05 && !peer.micMuted && !isSoundBlocked,
-            connectionState: peerConnectionStates[peer.socketId] || (peer.isBot ? 'connected' : 'connecting')
+            connectionState: peerConnectionStatesRef.current[peer.socketId] || (peer.isBot ? 'connected' : 'connecting')
           });
 
           if (isSoundBlocked) {
@@ -1334,7 +1452,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             ctx.textAlign = 'center';
             ctx.fillText(`🔇 BLOCKED: ${occlusion.blockingObstacle?.label || 'Acoustic Wall'}`, midX, midY + 4);
           } else {
-            // --- DYNAMIC WEBRTC ACOUSTIC SINE WAVE BEAM (CLEAR LINE OF SIGHT) ---
+            // --- DYNAMIC WEBRTC ACOUSTIC SINE WAVE BEAM WITH 3D STEREO SEPARATION ---
             const normalX = -dy / distance;
             const normalY = dx / distance;
             const segments = 32;
@@ -1376,10 +1494,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             ctx.lineWidth = 1.5;
             ctx.stroke();
 
-            // Sleek floating WebRTC Audio badge at midpoint
-            ctx.fillStyle = 'rgba(15, 23, 42, 0.88)';
+            // 3D Audio Stereo Separation Badge at midpoint
+            const panVal = attenuation?.pan !== undefined ? attenuation.pan : 0;
+            const panStr = panVal > 0.05 ? `+${panVal} R` : panVal < -0.05 ? `${panVal} L` : '3D CTR';
+            const badgeText = `GAIN: ${effectiveGain}% • ${panStr} (${Math.round(distance)}px)`;
+
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
             ctx.beginPath();
-            ctx.roundRect(midX - 52, midY - 11, 104, 22, 6);
+            ctx.roundRect(midX - 66, midY - 11, 132, 22, 6);
             ctx.fill();
             ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
             ctx.lineWidth = 1;
@@ -1388,16 +1510,20 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             ctx.fillStyle = '#38bdf8';
             ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
             ctx.textAlign = 'center';
-            ctx.fillText(`GAIN: ${effectiveGain}% (${Math.round(distance)}px)`, midX, midY + 4);
+            ctx.fillText(badgeText, midX, midY + 4);
           }
         }
       });
 
-      setPeersInEarshot(activePeersInRadius);
+      // Throttle peersInEarshot update to prevent React render spikes
+      if (activePeersInRadius.length !== peersInEarshotRef.current.length || now - lastUiThrottleRef.current > 100) {
+        setPeersInEarshot(activePeersInRadius);
+        peersInEarshotRef.current = activePeersInRadius;
+      }
 
-      // --- I. DRAW EARSHOT PROXIMITY RADIUS ---
+      // --- E. DRAW EARSHOT PROXIMITY RADIUS ---
       ctx.beginPath();
-      ctx.arc(pos.x, pos.y, earshotRadius, 0, Math.PI * 2);
+      ctx.arc(pos.x, pos.y, earshotRadiusRef.current, 0, Math.PI * 2);
       ctx.strokeStyle = activePeersInRadius.length > 0 ? 'rgba(16, 185, 129, 0.5)' : 'rgba(99, 102, 241, 0.25)';
       ctx.lineWidth = 1.5;
       ctx.setLineDash([5, 5]);
@@ -1407,11 +1533,11 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       ctx.fillStyle = activePeersInRadius.length > 0 ? 'rgba(16, 185, 129, 0.06)' : 'rgba(99, 102, 241, 0.03)';
       ctx.fill();
 
-      // --- J. DRAW REMOTE PEER AVATARS ---
+      // --- F. DRAW REMOTE PEER AVATARS ---
       peers.forEach((peer) => {
-        const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActive ? 0.35 : 0);
+        const peerAudioLvl = webrtcManagerRef.current?.getPeerAudioLevel(peer.socketId) || (peer.isBot && botAudioActiveRef.current ? 0.35 : 0);
         const isPeerSpeaking = peerAudioLvl > 0.05 && !peer.micMuted;
-        const isConnected = peerConnectionStates[peer.socketId] === 'connected' || (peer.isBot && botAudioActive);
+        const isConnected = peerConnectionStatesRef.current[peer.socketId] === 'connected' || (peer.isBot && botAudioActiveRef.current);
 
         // Acoustic speech ripples when peer speaks
         if (isPeerSpeaking) {
@@ -1479,7 +1605,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         ctx.fillText(peer.role || 'Member', peer.x, peer.y + 39);
       });
 
-      // --- K. DRAW LOCAL USER AVATAR ---
+      // --- G. DRAW LOCAL USER AVATAR ---
       // Voice acoustic emission ripples
       if (isLocalSpeaking) {
         for (let r = 1; r <= 3; r++) {
@@ -1495,7 +1621,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         const pulse = 3 * Math.sin(time * 3);
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, AVATAR_RADIUS + 3 + pulse, 0, Math.PI * 2);
-        ctx.strokeStyle = `${user?.avatarColor || '#6366f1'}66`;
+        ctx.strokeStyle = `${userRef.current?.avatarColor || '#6366f1'}66`;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -1509,7 +1635,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       // Body circle
       ctx.beginPath();
       ctx.arc(pos.x, pos.y, AVATAR_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = user?.avatarColor || '#6366f1';
+      ctx.fillStyle = userRef.current?.avatarColor || '#6366f1';
       ctx.fill();
       ctx.strokeStyle = isLocalSpeaking ? '#38bdf8' : '#ffffff';
       ctx.lineWidth = isLocalSpeaking ? 3 : 2.5;
@@ -1519,19 +1645,19 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 13px "Plus Jakarta Sans", sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText((user?.name || 'You').charAt(0).toUpperCase(), pos.x, pos.y + 4.5);
+      ctx.fillText((userRef.current?.name || 'You').charAt(0).toUpperCase(), pos.x, pos.y + 4.5);
 
       // Name & role above avatar
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 11px "Plus Jakarta Sans", sans-serif';
-      ctx.fillText(user?.name ? user.name.split(' ')[0] : 'You', pos.x, pos.y - 25);
+      ctx.fillText(userRef.current?.name ? userRef.current.name.split(' ')[0] : 'You', pos.x, pos.y - 25);
 
       ctx.fillStyle = '#38bdf8';
       ctx.font = 'bold 9px "Plus Jakarta Sans", sans-serif';
-      ctx.fillText(`YOU (${user?.role || 'Developer'})`, pos.x, pos.y - 14);
+      ctx.fillText(`YOU (${userRef.current?.role || 'Developer'})`, pos.x, pos.y - 14);
 
       // Microphone status icon indicator
-      if (micMuted || !isMicActive) {
+      if (micMutedRef.current || !isMicActiveRef.current) {
         ctx.beginPath();
         ctx.arc(pos.x + 12, pos.y - 12, 6, 0, Math.PI * 2);
         ctx.fillStyle = '#f43f5e';
@@ -1539,7 +1665,7 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         ctx.strokeStyle = '#ffffff';
         ctx.lineWidth = 1;
         ctx.stroke();
-      } else if (isMicActive) {
+      } else if (isMicActiveRef.current) {
         ctx.beginPath();
         ctx.arc(pos.x + 12, pos.y - 12, 6, 0, Math.PI * 2);
         ctx.fillStyle = '#10b981';
@@ -1549,15 +1675,36 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
         ctx.stroke();
       }
 
-      animationFrameId = requestAnimationFrame(render);
+      // --- H. STEADY 60 FPS PERFORMANCE & 3D AUDIO OVERLAY PILL ---
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.beginPath();
+      ctx.roundRect(WORLD_WIDTH - 250, 16, 234, 28, 8);
+      ctx.fill();
+      ctx.strokeStyle = fpsMetric.fps >= 58 ? 'rgba(16, 185, 129, 0.5)' : 'rgba(245, 158, 11, 0.5)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(WORLD_WIDTH - 238, 30, 4, 0, Math.PI * 2);
+      ctx.fillStyle = fpsMetric.fps >= 58 ? '#10b981' : '#f59e0b';
+      ctx.fill();
+
+      ctx.fillStyle = '#f8fafc';
+      ctx.font = 'bold 10px "Plus Jakarta Sans", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(
+        `${fpsMetric.fps}.0 FPS (${fpsMetric.frameTime}ms) • 3D PAN`,
+        WORLD_WIDTH - 228,
+        33.5
+      );
     };
 
-    render();
+    animationFrameId = requestAnimationFrame(render);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [earshotRadius, micMuted, isMicActive, user, peerConnectionStates, botAudioActive]);
+  }, []);
 
   return (
     <div className="w-full max-w-6xl mx-auto flex flex-col gap-4">
@@ -1638,6 +1785,16 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             >
               <Headphones className="w-3.5 h-3.5 text-cyan-200" />
               <span>Audio Check (2-Browser P2P)</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => setIsSpatial3DModalOpen(true)}
+              className="px-2.5 sm:px-3 py-1.5 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 border border-purple-400/50 text-white text-[11px] sm:text-xs font-bold flex items-center space-x-1.5 shadow-md shadow-purple-600/30 cursor-pointer transition-all"
+              title="Configure 3D Spatial Audio & Stereo Separation Width"
+            >
+              <Sliders className="w-3.5 h-3.5 text-purple-200" />
+              <span>3D Audio ({Math.round(stereoSeparation * 100)}% Stereo)</span>
             </button>
 
             <button
@@ -1777,7 +1934,14 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
                         🔇 BLOCKED ({peer.blockingObstacle || 'Wall'})
                       </span>
                     ) : (
-                      <span className="text-emerald-400 font-bold">{peer.gain}% ({peer.distance}px)</span>
+                      <>
+                        <span className="text-emerald-400 font-bold">{peer.gain}% ({peer.distance}px)</span>
+                        {peer.pan !== undefined && (
+                          <span className="text-[9px] px-1 py-0.5 rounded font-mono bg-purple-900/60 text-purple-200 border border-purple-500/30">
+                            {peer.pan > 0.05 ? `+${peer.pan} R` : peer.pan < -0.05 ? `${peer.pan} L` : '3D CTR'}
+                          </span>
+                        )}
+                      </>
                     )}
                     <span className={`text-[9px] px-1 py-0.5 rounded font-mono ${peer.isSoundBlocked ? 'bg-rose-950/80 text-rose-300 border border-rose-500/30' : 'bg-emerald-900/80 text-emerald-300'}`}>
                       {peer.isSoundBlocked ? 'Sound Muted' : peer.connectionState === 'connected' ? 'Live Audio' : 'Connecting'}
@@ -2137,6 +2301,21 @@ export default function VirtualOfficeWorld({ user, onBackToDashboard, showToast 
             .then((data) => data.success && setMySQLStatus(data.data))
             .catch(() => {});
         }}
+      />
+
+      {/* ====================================================
+          14. 3D SPATIAL AUDIO & STEREO SEPARATION MODAL
+         ==================================================== */}
+      <Spatial3DAudioModal
+        isOpen={isSpatial3DModalOpen}
+        onClose={() => setIsSpatial3DModalOpen(false)}
+        stereoSeparation={stereoSeparation}
+        onChangeStereoSeparation={setStereoSeparation}
+        panningMode={panningMode}
+        onChangePanningMode={setPanningMode}
+        peersInEarshot={peersInEarshot}
+        fpsMetric={fpsMetric}
+        webrtcManager={webrtcManagerRef.current}
       />
     </div>
   );
