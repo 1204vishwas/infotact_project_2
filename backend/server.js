@@ -1,4 +1,6 @@
 const http = require('http');
+const path = require('path');
+const fs = require('fs');
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
@@ -49,6 +51,20 @@ app.get('/api/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// Serve the built frontend from the same origin in production (single service,
+// so relative /api and /socket.io URLs keep working without CORS or a proxy).
+const CLIENT_DIST = path.join(__dirname, '..', 'frontend', 'dist');
+if (fs.existsSync(path.join(CLIENT_DIST, 'index.html'))) {
+  app.use(express.static(CLIENT_DIST));
+  // SPA fallback: anything that is not an API/Socket.io route returns index.html
+  app.get(/^\/(?!api\/|socket\.io\/|api$|socket\.io$).*/, (req, res) => {
+    res.sendFile(path.join(CLIENT_DIST, 'index.html'));
+  });
+  console.log(`[ProxiSpeak] Serving frontend build from ${CLIENT_DIST}`);
+} else {
+  console.log('[ProxiSpeak] No frontend build found (run "npm run build"); API-only mode.');
+}
 
 // HTTP + Socket.io server
 const httpServer = http.createServer(app);

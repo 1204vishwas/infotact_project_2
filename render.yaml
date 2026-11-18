@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: proxispeak
+    runtime: node
+    plan: free
+    region: singapore
+    branch: Raghavendra-Patne
+    # Builds the React client and installs backend dependencies, then the
+    # Express server serves frontend/dist on the same origin (single service).
+    buildCommand: npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Set these in the Render dashboard (values are never stored in git).
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
